@@ -1,0 +1,38 @@
+# Unreal Engine
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.VC.db
+*.VC.opendb
+*.sln.DotSettings.user
+
+# Build products
+*.pdb
+*.obj
+*.o
+*.lib
+*.dll
+*.exp
+*.ilk
+*.exe
+*.app
+*.dSYM/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.cache
+
+# Generated project files
+*.suo
+*.opensdf
+*.sdf
+
+# OS files
+Thumbs.db
+.DS_Store

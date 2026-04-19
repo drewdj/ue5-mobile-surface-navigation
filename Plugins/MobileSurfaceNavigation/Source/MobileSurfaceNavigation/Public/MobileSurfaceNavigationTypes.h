@@ -1,0 +1,156 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "MobileSurfaceNavigationTypes.generated.h"
+
+UENUM(BlueprintType)
+enum class EMobileSurfaceBoundaryKind : uint8
+{
+	Unknown = 0,
+	Outer = 1,
+	Hole = 2
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavVertex
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector LocalPosition = FVector::ZeroVector;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavTriangle
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FIntVector VertexIndices = FIntVector(INDEX_NONE, INDEX_NONE, INDEX_NONE);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FIntVector NeighborTriangleIndices = FIntVector(INDEX_NONE, INDEX_NONE, INDEX_NONE);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector Normal = FVector::UpVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector Center = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 RegionId = INDEX_NONE;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavEdge
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FIntPoint VertexIndices = FIntPoint(INDEX_NONE, INDEX_NONE);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FIntPoint TriangleIndices = FIntPoint(INDEX_NONE, INDEX_NONE);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	bool bIsBoundary = false;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavBoundaryLoop
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<int32> VertexIndices;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 RegionId = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	EMobileSurfaceBoundaryKind Kind = EMobileSurfaceBoundaryKind::Unknown;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	bool bClosed = false;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavRegion
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<int32> TriangleIndices;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<int32> BoundaryLoopIndices;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector AverageNormal = FVector::UpVector;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FName LinkId = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	int32 FromRegionId = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	int32 ToRegionId = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FVector FromLocalPosition = FVector::ZeroVector;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FVector ToLocalPosition = FVector::ZeroVector;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavVertex> Vertices;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavTriangle> Triangles;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavEdge> Edges;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavBoundaryLoop> BoundaryLoops;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavRegion> Regions;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavSpecialLink> SpecialLinks;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FBox LocalBounds = FBox(EForceInit::ForceInit);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	bool bIsValid = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FString BuildNotes;
+
+	void Reset()
+	{
+		Vertices.Reset();
+		Triangles.Reset();
+		Edges.Reset();
+		BoundaryLoops.Reset();
+		Regions.Reset();
+		LocalBounds = FBox(EForceInit::ForceInit);
+		bIsValid = false;
+		BuildNotes.Reset();
+	}
+};

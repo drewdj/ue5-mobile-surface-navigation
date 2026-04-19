@@ -1,0 +1,20 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "Mobile Surface Navigation",
+	"Description": "Bake and debug foundational navigation data over mobile local-space surfaces.",
+	"Category": "AI",
+	"CreatedBy": "OpenAI Codex",
+	"CanContainContent": false,
+	"IsBetaVersion": true,
+	"Installed": false,
+	"EnabledByDefault": true,
+	"Modules": [
+		{
+			"Name": "MobileSurfaceNavigation",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	]
+}
