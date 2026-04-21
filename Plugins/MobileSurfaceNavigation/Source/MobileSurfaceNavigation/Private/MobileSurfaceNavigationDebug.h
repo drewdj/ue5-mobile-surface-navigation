@@ -12,6 +12,7 @@ struct FMobileSurfaceNavDebugSettings
 	bool bDrawBoundaryEdges = true;
 	bool bDrawTriangles = true;
 	bool bDrawTriangleNormals = false;
+	bool bDrawPortals = false;
 	float VertexSize = 8.0f;
 	float LineThickness = 1.5f;
 	float NormalLength = 30.0f;

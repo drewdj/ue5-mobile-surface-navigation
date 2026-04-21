@@ -90,6 +90,22 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 		}
 	}
 
+	if (Settings.bDrawPortals)
+	{
+		for (const FMobileSurfaceNavPortal& Portal : NavData.Portals)
+		{
+			if (!NavData.Triangles.IsValidIndex(Portal.TriangleA) || !NavData.Triangles.IsValidIndex(Portal.TriangleB))
+			{
+				continue;
+			}
+
+			const FVector CenterA = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleA].Center);
+			const FVector CenterB = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleB].Center);
+			DrawDebugLine(World, CenterA, CenterB, FColor::Magenta, false, Settings.Duration, DepthPriority, Settings.LineThickness * 1.5f);
+			DrawDebugPoint(World, LocalToWorld.TransformPosition(Portal.Center), Settings.VertexSize * 0.75f, FColor::Magenta, false, Settings.Duration, DepthPriority);
+		}
+	}
+
 	if (Settings.bDrawVertices)
 	{
 		for (const int32 VertexIndex : UsedVertexIndices)
