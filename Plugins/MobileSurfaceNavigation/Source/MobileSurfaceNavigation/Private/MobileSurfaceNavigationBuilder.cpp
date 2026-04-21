@@ -547,9 +547,35 @@ namespace MobileSurfaceNavigation::Builder
 		}
 	}
 
+	static float ComputeBoundaryClearance(const FMobileSurfaceNavData& NavData, const FVector& LocalPosition)
+	{
+		double BestDistanceSquared = TNumericLimits<double>::Max();
+		bool bHasBoundary = false;
+
+		for (const FMobileSurfaceNavEdge& BoundaryEdge : NavData.Edges)
+		{
+			if (!BoundaryEdge.bIsBoundary)
+			{
+				continue;
+			}
+
+			bHasBoundary = true;
+			const FVector A = NavData.Vertices[BoundaryEdge.VertexIndices.X].LocalPosition;
+			const FVector B = NavData.Vertices[BoundaryEdge.VertexIndices.Y].LocalPosition;
+			BestDistanceSquared = FMath::Min(BestDistanceSquared, static_cast<double>(FMath::PointDistToSegmentSquared(LocalPosition, A, B)));
+		}
+
+		return bHasBoundary ? static_cast<float>(FMath::Sqrt(BestDistanceSquared)) : TNumericLimits<float>::Max();
+	}
+
 	static void RebuildFinalEdgesAndAdjacency(FMobileSurfaceNavData& OutNavData)
 	{
 		OutNavData.Edges.Reset();
+		OutNavData.Portals.Reset();
+		OutNavData.TriangleAdjacency.Reset();
+		OutNavData.TriangleBounds.Reset();
+		OutNavData.TriangleAdjacency.SetNum(OutNavData.Triangles.Num());
+		OutNavData.TriangleBounds.SetNum(OutNavData.Triangles.Num());
 		for (FMobileSurfaceNavTriangle& Triangle : OutNavData.Triangles)
 		{
 			Triangle.NeighborTriangleIndices = FIntVector(INDEX_NONE, INDEX_NONE, INDEX_NONE);
@@ -561,6 +587,15 @@ namespace MobileSurfaceNavigation::Builder
 		{
 			FMobileSurfaceNavTriangle& Triangle = OutNavData.Triangles[TriangleIndex];
 			const int32 TriangleVertices[3] = { Triangle.VertexIndices.X, Triangle.VertexIndices.Y, Triangle.VertexIndices.Z };
+			FBox TriangleBounds(EForceInit::ForceInit);
+			for (const int32 VertexIndex : TriangleVertices)
+			{
+				if (OutNavData.Vertices.IsValidIndex(VertexIndex))
+				{
+					TriangleBounds += OutNavData.Vertices[VertexIndex].LocalPosition;
+				}
+			}
+			OutNavData.TriangleBounds[TriangleIndex].LocalBounds = TriangleBounds;
 
 			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
 			{
@@ -603,6 +638,40 @@ namespace MobileSurfaceNavigation::Builder
 		for (FMobileSurfaceNavEdge& Edge : OutNavData.Edges)
 		{
 			Edge.bIsBoundary = (Edge.TriangleIndices.X == INDEX_NONE || Edge.TriangleIndices.Y == INDEX_NONE);
+		}
+
+		for (FMobileSurfaceNavEdge& Edge : OutNavData.Edges)
+		{
+			if (!Edge.bIsBoundary)
+			{
+				const int32 PortalIndex = OutNavData.Portals.Num();
+				FMobileSurfaceNavPortal& Portal = OutNavData.Portals.AddDefaulted_GetRef();
+				Portal.TriangleA = Edge.TriangleIndices.X;
+				Portal.TriangleB = Edge.TriangleIndices.Y;
+				Portal.VertexIndices = Edge.VertexIndices;
+				Portal.LeftPoint = OutNavData.Vertices[Edge.VertexIndices.X].LocalPosition;
+				Portal.RightPoint = OutNavData.Vertices[Edge.VertexIndices.Y].LocalPosition;
+				Portal.Center = (Portal.LeftPoint + Portal.RightPoint) * 0.5f;
+				Portal.Width = FVector::Distance(Portal.LeftPoint, Portal.RightPoint);
+				const float PortalBoundaryClearance = ComputeBoundaryClearance(OutNavData, Portal.Center);
+
+				if (OutNavData.Triangles.IsValidIndex(Portal.TriangleA) && OutNavData.Triangles.IsValidIndex(Portal.TriangleB))
+				{
+					FMobileSurfaceTriangleAdjacency& AdjacencyA = OutNavData.TriangleAdjacency[Portal.TriangleA].Neighbors.AddDefaulted_GetRef();
+					AdjacencyA.NeighborTriangleIndex = Portal.TriangleB;
+					AdjacencyA.PortalIndex = PortalIndex;
+					AdjacencyA.TravelCost = FVector::Distance(OutNavData.Triangles[Portal.TriangleA].Center, OutNavData.Triangles[Portal.TriangleB].Center);
+					AdjacencyA.PortalWidth = Portal.Width;
+					AdjacencyA.BoundaryClearance = PortalBoundaryClearance;
+
+					FMobileSurfaceTriangleAdjacency& AdjacencyB = OutNavData.TriangleAdjacency[Portal.TriangleB].Neighbors.AddDefaulted_GetRef();
+					AdjacencyB.NeighborTriangleIndex = Portal.TriangleA;
+					AdjacencyB.PortalIndex = PortalIndex;
+					AdjacencyB.TravelCost = AdjacencyA.TravelCost;
+					AdjacencyB.PortalWidth = Portal.Width;
+					AdjacencyB.BoundaryClearance = PortalBoundaryClearance;
+				}
+			}
 		}
 	}
 

@@ -90,6 +90,81 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavRegion
 };
 
 USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPortal
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 TriangleA = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 TriangleB = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FIntPoint VertexIndices = FIntPoint(INDEX_NONE, INDEX_NONE);
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector LeftPoint = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector RightPoint = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FVector Center = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	float Width = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceTriangleAdjacency
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 NeighborTriangleIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 PortalIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	float TravelCost = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	float PortalWidth = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	float BoundaryClearance = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceTriangleAdjacencyList
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceTriangleAdjacency> Neighbors;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceTriangleBounds
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	FBox LocalBounds = FBox(EForceInit::ForceInit);
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfacePathQueryParams
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	float AgentRadius = 0.0f;
+};
+
+USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
 {
 	GENERATED_BODY()
@@ -130,6 +205,15 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceNavRegion> Regions;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavPortal> Portals;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceTriangleAdjacencyList> TriangleAdjacency;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceTriangleBounds> TriangleBounds;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceNavSpecialLink> SpecialLinks;
 
@@ -149,8 +233,38 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 		Edges.Reset();
 		BoundaryLoops.Reset();
 		Regions.Reset();
+		Portals.Reset();
+		TriangleAdjacency.Reset();
+		TriangleBounds.Reset();
 		LocalBounds = FBox(EForceInit::ForceInit);
 		bIsValid = false;
 		BuildNotes.Reset();
 	}
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPath
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	bool bIsValid = false;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 StartTriangleIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 EndTriangleIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<int32> TriangleIndices;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FVector> RawWaypoints;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FVector> Waypoints;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	float EstimatedLength = 0.0f;
 };
