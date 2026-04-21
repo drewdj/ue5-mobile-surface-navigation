@@ -6,6 +6,8 @@
 #include "Components/SceneComponent.h"
 #include "GameFramework/Actor.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavAgent, Log, All);
+
 UMobileSurfaceNavAgentComponent::UMobileSurfaceNavAgentComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -24,12 +26,30 @@ void UMobileSurfaceNavAgentComponent::InitializeAgent(
 	RandomStream.Initialize(InRandomSeed);
 }
 
+static const TCHAR* LexBoolText(const bool bValue)
+{
+	return bValue ? TEXT("true") : TEXT("false");
+}
+
 bool UMobileSurfaceNavAgentComponent::RequestMoveToLocal(const FVector& TargetLocalPosition)
 {
+	return RequestMoveToLocalInternal(TargetLocalPosition, false);
+}
+
+bool UMobileSurfaceNavAgentComponent::RequestMoveToLocalInternal(
+	const FVector& TargetLocalPosition,
+	const bool bPreserveCurrentPathUntilSuccess)
+{
+	bHasActiveTarget = true;
+	bActiveTargetIsRandom = false;
+	ActiveTargetLocalPosition = TargetLocalPosition;
+
 	if (!NavigationComponent || !NavigationComponent->HasValidNavigationData())
 	{
-		CurrentPath = FMobileSurfaceNavPath();
+		ClearCurrentPath();
 		ClearPendingPathRequest();
+		bHasActiveTarget = false;
+		bActiveTargetIsRandom = false;
 		return false;
 	}
 
@@ -37,12 +57,25 @@ bool UMobileSurfaceNavAgentComponent::RequestMoveToLocal(const FVector& TargetLo
 	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
 	if (!Owner || !SpaceComponent)
 	{
+		bHasActiveTarget = false;
+		bActiveTargetIsRandom = false;
 		return false;
 	}
 
 	const FVector CurrentLocal = SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
 	FMobileSurfacePathQueryParams Params;
 	Params.AgentRadius = AgentRadius;
+	LastRequestedRuntimeStateRevision = NavigationComponent->GetRuntimeStateRevision();
+
+	if (bLogPathRequests)
+	{
+		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s request path: start=%s target=%s revision=%d queued=%s"),
+			*GetNameSafe(GetOwner()),
+			*CurrentLocal.ToCompactString(),
+			*TargetLocalPosition.ToCompactString(),
+			LastRequestedRuntimeStateRevision,
+			LexBoolText(bUseQueuedPathRequests));
+	}
 
 	if (bUseQueuedPathRequests)
 	{
@@ -53,21 +86,46 @@ bool UMobileSurfaceNavAgentComponent::RequestMoveToLocal(const FVector& TargetLo
 				ClearPendingPathRequest();
 				PendingPathRequest = Subsystem->QueuePathRequest(NavigationComponent, CurrentLocal, TargetLocalPosition, Params);
 				PendingTargetLocalPosition = TargetLocalPosition;
-				CurrentPath = FMobileSurfaceNavPath();
-				CurrentWaypointIndex = 0;
+				bPendingPathPreservesCurrentPath = bPreserveCurrentPathUntilSuccess;
+				if (!bPreserveCurrentPathUntilSuccess)
+				{
+					ClearCurrentPath();
+					CurrentWaypointIndex = 0;
+				}
 				return PendingPathRequest.IsValid();
 			}
 		}
 	}
 
-	return RequestPathImmediate(TargetLocalPosition);
+	return RequestPathImmediate(TargetLocalPosition, bPreserveCurrentPathUntilSuccess);
 }
 
-bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(const FVector& TargetLocalPosition)
+bool UMobileSurfaceNavAgentComponent::RequestMoveToWorld(const FVector& TargetWorldPosition)
+{
+	if (!NavigationComponent || !NavigationComponent->GetOwner())
+	{
+		return false;
+	}
+
+	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner()->GetRootComponent();
+	if (!SpaceComponent)
+	{
+		return false;
+	}
+
+	return RequestMoveToLocal(SpaceComponent->GetComponentTransform().InverseTransformPosition(TargetWorldPosition));
+}
+
+bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(
+	const FVector& TargetLocalPosition,
+	const bool bPreserveCurrentPathUntilSuccess)
 {
 	if (!NavigationComponent || !NavigationComponent->HasValidNavigationData())
 	{
-		CurrentPath = FMobileSurfaceNavPath();
+		if (!bPreserveCurrentPathUntilSuccess)
+		{
+			ClearCurrentPath();
+		}
 		ClearPendingPathRequest();
 		return false;
 	}
@@ -80,15 +138,41 @@ bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(const FVector& Target
 	}
 
 	const FVector CurrentLocal = SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
-	const bool bPathFound = NavigationComponent->FindPathLocal(CurrentLocal, TargetLocalPosition, CurrentPath, AgentRadius);
+	FMobileSurfaceNavPath NewPath;
+	const bool bPathFound = NavigationComponent->FindPathLocal(CurrentLocal, TargetLocalPosition, NewPath, AgentRadius);
 	if (!bPathFound)
 	{
-		CurrentPath = FMobileSurfaceNavPath();
+		if (bLogPathRequests)
+		{
+			UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s immediate path failed: target=%s revision=%d"),
+				*GetNameSafe(GetOwner()),
+				*TargetLocalPosition.ToCompactString(),
+				LastRequestedRuntimeStateRevision);
+		}
+		if (!bPreserveCurrentPathUntilSuccess)
+		{
+			ClearCurrentPath();
+		}
 		return false;
 	}
 
+	CurrentPath = NewPath;
 	ClearPendingPathRequest();
+	ObservedRuntimeStateRevision = CurrentPath.RuntimeStateRevision;
 	CurrentWaypointIndex = CurrentPath.Waypoints.Num() > 1 ? 1 : 0;
+	LastProgressWaypointIndex = CurrentWaypointIndex;
+	LastProgressWorldPosition = Owner->GetActorLocation();
+	SameWaypointStuckChecks = 0;
+	StuckCheckTimer = 0.0f;
+	if (bLogPathRequests)
+	{
+		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s immediate path success: triangles=%d waypoints=%d length=%.1f revision=%d"),
+			*GetNameSafe(GetOwner()),
+			CurrentPath.TriangleIndices.Num(),
+			CurrentPath.Waypoints.Num(),
+			CurrentPath.EstimatedLength,
+			ObservedRuntimeStateRevision);
+	}
 	return true;
 }
 
@@ -110,7 +194,7 @@ bool UMobileSurfaceNavAgentComponent::PollPendingPathRequest()
 	{
 		const FVector Target = PendingTargetLocalPosition;
 		PendingPathRequest = FMobileSurfacePathRequestHandle();
-		return RequestPathImmediate(Target);
+		return RequestPathImmediate(Target, false);
 	}
 
 	bool bSucceeded = false;
@@ -123,12 +207,39 @@ bool UMobileSurfaceNavAgentComponent::PollPendingPathRequest()
 	PendingPathRequest = FMobileSurfacePathRequestHandle();
 	if (!bSucceeded || !Path.bIsValid)
 	{
-		CurrentPath = FMobileSurfaceNavPath();
+		if (bLogPathRequests)
+		{
+			UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s queued path failed: target=%s requestedRevision=%d currentRevision=%d"),
+				*GetNameSafe(GetOwner()),
+				*PendingTargetLocalPosition.ToCompactString(),
+				LastRequestedRuntimeStateRevision,
+				NavigationComponent ? NavigationComponent->GetRuntimeStateRevision() : INDEX_NONE);
+		}
+		if (!bPendingPathPreservesCurrentPath)
+		{
+			ClearCurrentPath();
+		}
+		bPendingPathPreservesCurrentPath = false;
 		return false;
 	}
 
 	CurrentPath = Path;
+	bPendingPathPreservesCurrentPath = false;
+	ObservedRuntimeStateRevision = CurrentPath.RuntimeStateRevision;
 	CurrentWaypointIndex = CurrentPath.Waypoints.Num() > 1 ? 1 : 0;
+	LastProgressWaypointIndex = CurrentWaypointIndex;
+	LastProgressWorldPosition = GetOwner() ? GetOwner()->GetActorLocation() : FVector::ZeroVector;
+	SameWaypointStuckChecks = 0;
+	StuckCheckTimer = 0.0f;
+	if (bLogPathRequests)
+	{
+		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s queued path success: triangles=%d waypoints=%d length=%.1f revision=%d"),
+			*GetNameSafe(GetOwner()),
+			CurrentPath.TriangleIndices.Num(),
+			CurrentPath.Waypoints.Num(),
+			CurrentPath.EstimatedLength,
+			ObservedRuntimeStateRevision);
+	}
 	return true;
 }
 
@@ -148,6 +259,45 @@ void UMobileSurfaceNavAgentComponent::ClearPendingPathRequest()
 	}
 
 	PendingPathRequest = FMobileSurfacePathRequestHandle();
+	bPendingPathPreservesCurrentPath = false;
+}
+
+void UMobileSurfaceNavAgentComponent::ClearCurrentPath()
+{
+	CurrentPath = FMobileSurfaceNavPath();
+	CurrentWaypointIndex = 0;
+	LastProgressWaypointIndex = INDEX_NONE;
+	SameWaypointStuckChecks = 0;
+	StuckCheckTimer = 0.0f;
+}
+
+bool UMobileSurfaceNavAgentComponent::RepathToActiveTarget()
+{
+	if (!bHasActiveTarget)
+	{
+		return false;
+	}
+
+	const bool bWasRandomTarget = bActiveTargetIsRandom;
+	const FVector TargetLocalPosition = ActiveTargetLocalPosition;
+	const bool bRequested = RequestMoveToLocalInternal(TargetLocalPosition, true);
+	bHasActiveTarget = true;
+	bActiveTargetIsRandom = bWasRandomTarget;
+	ActiveTargetLocalPosition = TargetLocalPosition;
+	return bRequested;
+}
+
+void UMobileSurfaceNavAgentComponent::HandleMoveCompleted()
+{
+	ClearCurrentPath();
+
+	if (bActiveTargetIsRandom)
+	{
+		RequestRandomPath();
+		return;
+	}
+
+	bHasActiveTarget = false;
 }
 
 bool UMobileSurfaceNavAgentComponent::RequestRandomPath()
@@ -160,14 +310,29 @@ bool UMobileSurfaceNavAgentComponent::RequestRandomPath()
 	FVector TargetLocal = FVector::ZeroVector;
 	for (int32 AttemptIndex = 0; AttemptIndex < 12; ++AttemptIndex)
 	{
-		if (PickRandomNavigablePoint(TargetLocal) && RequestMoveToLocal(TargetLocal))
+		if (PickRandomNavigablePoint(TargetLocal))
 		{
-			return true;
+			const bool bRequested = RequestMoveToLocal(TargetLocal);
+			if (bRequested)
+			{
+				bPendingInitialRandomPathRequest = false;
+				bActiveTargetIsRandom = true;
+				ActiveTargetLocalPosition = TargetLocal;
+			}
+			return bRequested;
 		}
 	}
 
-	CurrentPath = FMobileSurfaceNavPath();
+	ClearCurrentPath();
 	return false;
+}
+
+void UMobileSurfaceNavAgentComponent::StopMovement()
+{
+	bHasActiveTarget = false;
+	bActiveTargetIsRandom = false;
+	ClearPendingPathRequest();
+	ClearCurrentPath();
 }
 
 float UMobileSurfaceNavAgentComponent::GetAgentRadius() const
@@ -181,7 +346,7 @@ void UMobileSurfaceNavAgentComponent::BeginPlay()
 
 	if (bRequestRandomPathOnBeginPlay)
 	{
-		RequestRandomPath();
+		bPendingInitialRandomPathRequest = !RequestRandomPath();
 	}
 }
 
@@ -208,23 +373,63 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 
 	if (PendingPathRequest.IsValid())
 	{
+		if (bRepathWhenNavigationChanges && NavigationComponent && bHasActiveTarget &&
+			LastRequestedRuntimeStateRevision != NavigationComponent->GetRuntimeStateRevision())
+		{
+			ClearPendingPathRequest();
+			RepathToActiveTarget();
+		}
+		return;
+	}
+
+	if (bPendingInitialRandomPathRequest)
+	{
+		RepathTimer -= DeltaTime;
+		if (RepathTimer <= 0.0f)
+		{
+			RepathTimer = RepathDelay;
+			bPendingInitialRandomPathRequest = !RequestRandomPath();
+		}
+		return;
+	}
+
+	if (bRepathWhenNavigationChanges && NavigationComponent && bHasActiveTarget && CurrentPath.bIsValid &&
+		NavigationComponent->GetRuntimeStateRevision() != ObservedRuntimeStateRevision)
+	{
+		if (bLogPathRequests)
+		{
+			UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s nav revision changed: observed=%d current=%d repathing"),
+				*GetNameSafe(GetOwner()),
+				ObservedRuntimeStateRevision,
+				NavigationComponent->GetRuntimeStateRevision());
+		}
+		ClearPendingPathRequest();
+		RepathToActiveTarget();
 		return;
 	}
 
 	if (!NavigationComponent || !CurrentPath.bIsValid || CurrentPath.Waypoints.Num() == 0)
 	{
 		RepathTimer -= DeltaTime;
-		if (RepathTimer <= 0.0f)
+		if (RepathTimer <= 0.0f && (bActiveTargetIsRandom || bHasActiveTarget))
 		{
 			RepathTimer = RepathDelay;
-			RequestRandomPath();
+			if (NavigationComponent && LastRequestedRuntimeStateRevision != NavigationComponent->GetRuntimeStateRevision())
+			{
+				ClearPendingPathRequest();
+			}
+
+			if (!RepathToActiveTarget() && bActiveTargetIsRandom)
+			{
+				RequestRandomPath();
+			}
 		}
 		return;
 	}
 
 	if (CurrentWaypointIndex >= CurrentPath.Waypoints.Num())
 	{
-		RequestRandomPath();
+		HandleMoveCompleted();
 		return;
 	}
 
@@ -242,15 +447,55 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 	if (DistanceToTarget <= AcceptanceRadius)
 	{
 		++CurrentWaypointIndex;
+		LastProgressWaypointIndex = CurrentWaypointIndex;
+		LastProgressWorldPosition = CurrentWorld;
+		SameWaypointStuckChecks = 0;
+		StuckCheckTimer = 0.0f;
 		if (CurrentWaypointIndex >= CurrentPath.Waypoints.Num())
 		{
-			RequestRandomPath();
+			HandleMoveCompleted();
 		}
 		return;
 	}
 
 	const FVector Step = ToTarget.GetSafeNormal() * MoveSpeed * DeltaTime;
 	Owner->SetActorLocation(CurrentWorld + Step.GetClampedToMaxSize(DistanceToTarget));
+
+	if (bEnableStuckRecovery && bHasActiveTarget)
+	{
+		StuckCheckTimer += DeltaTime;
+		if (StuckCheckTimer >= StuckCheckInterval)
+		{
+			StuckCheckTimer = 0.0f;
+			const FVector NewWorldPosition = Owner->GetActorLocation();
+			const bool bSameWaypoint = LastProgressWaypointIndex == CurrentWaypointIndex;
+			const float ProgressDistance = FVector::Dist(NewWorldPosition, LastProgressWorldPosition);
+			if (bSameWaypoint && ProgressDistance < MinProgressDistance)
+			{
+				++SameWaypointStuckChecks;
+				if (SameWaypointStuckChecks >= MaxSameWaypointStuckChecks)
+				{
+					if (bLogPathRequests)
+					{
+						UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s stuck near waypoint=%d progress=%.2f, repathing to target=%s"),
+							*GetNameSafe(GetOwner()),
+							CurrentWaypointIndex,
+							ProgressDistance,
+							*ActiveTargetLocalPosition.ToCompactString());
+					}
+					SameWaypointStuckChecks = 0;
+					RepathToActiveTarget();
+					return;
+				}
+			}
+			else
+			{
+				SameWaypointStuckChecks = 0;
+				LastProgressWaypointIndex = CurrentWaypointIndex;
+				LastProgressWorldPosition = NewWorldPosition;
+			}
+		}
+	}
 }
 
 bool UMobileSurfaceNavAgentComponent::PickRandomNavigablePoint(FVector& OutLocalPoint)

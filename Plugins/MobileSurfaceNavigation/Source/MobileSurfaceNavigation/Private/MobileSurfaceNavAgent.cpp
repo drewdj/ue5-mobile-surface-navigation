@@ -39,8 +39,27 @@ void AMobileSurfaceNavAgent::InitializeAgent(
 	if (AgentComponent)
 	{
 		AgentComponent->InitializeAgent(InNavigationComponent, InAgentRadius, InMoveSpeed, InRandomSeed);
+		AgentComponent->RequestRandomPath();
 	}
 	ApplyAgentVisualScale();
+}
+
+bool AMobileSurfaceNavAgent::RequestMoveToWorld(const FVector& TargetWorldPosition)
+{
+	return AgentComponent ? AgentComponent->RequestMoveToWorld(TargetWorldPosition) : false;
+}
+
+bool AMobileSurfaceNavAgent::RequestMoveToLocal(const FVector& TargetLocalPosition)
+{
+	return AgentComponent ? AgentComponent->RequestMoveToLocal(TargetLocalPosition) : false;
+}
+
+void AMobileSurfaceNavAgent::StopMovement()
+{
+	if (AgentComponent)
+	{
+		AgentComponent->StopMovement();
+	}
 }
 
 void AMobileSurfaceNavAgent::OnConstruction(const FTransform& Transform)

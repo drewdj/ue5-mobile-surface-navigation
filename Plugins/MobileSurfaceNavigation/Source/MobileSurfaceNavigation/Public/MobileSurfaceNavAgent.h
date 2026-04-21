@@ -20,6 +20,15 @@ public:
 
 	void InitializeAgent(UMobileSurfaceNavComponent* InNavigationComponent, float InAgentRadius, float InMoveSpeed, int32 InRandomSeed);
 
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	bool RequestMoveToWorld(const FVector& TargetWorldPosition);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	bool RequestMoveToLocal(const FVector& TargetLocalPosition);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	void StopMovement();
+
 protected:
 	virtual void OnConstruction(const FTransform& Transform) override;
 
