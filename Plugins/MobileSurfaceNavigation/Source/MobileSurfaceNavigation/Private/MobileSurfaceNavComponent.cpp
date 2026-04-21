@@ -9,6 +9,7 @@
 
 #include "Components/SceneComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/TextRenderComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
@@ -62,6 +63,8 @@ void UMobileSurfaceNavComponent::DrawNavigationDebug(const float Duration)
 	Settings.bDrawTriangles = bDrawTriangles;
 	Settings.bDrawTriangleNormals = bDrawTriangleNormals;
 	Settings.bDrawPortals = bDrawPortals;
+	Settings.bDrawPortalLabels = bDrawPortalLabels;
+	Settings.HighlightPortalIndex = SelectedPortalIndex;
 	Settings.Duration = Duration;
 
 	FMobileSurfaceNavigationDebug::DrawNavData(GetWorld(), GetNavigationSpaceComponent(), NavigationData, Settings);
@@ -72,6 +75,15 @@ bool UMobileSurfaceNavComponent::FindPathLocal(const FVector& StartLocalPosition
 {
 	FMobileSurfacePathQueryParams Params;
 	Params.AgentRadius = AgentRadius;
+	return FMobileSurfacePathfinder::FindPath(NavigationData, StartLocalPosition, EndLocalPosition, Params, OutPath);
+}
+
+bool UMobileSurfaceNavComponent::FindPathLocalWithParams(
+	const FVector& StartLocalPosition,
+	const FVector& EndLocalPosition,
+	const FMobileSurfacePathQueryParams& Params,
+	FMobileSurfaceNavPath& OutPath) const
+{
 	return FMobileSurfacePathfinder::FindPath(NavigationData, StartLocalPosition, EndLocalPosition, Params, OutPath);
 }
 
@@ -87,6 +99,7 @@ int32 UMobileSurfaceNavComponent::FindNearestTriangle(const FVector& LocalPositi
 
 void UMobileSurfaceNavComponent::ClearNavigationData()
 {
+	DestroyPortalLabelComponents();
 	NavigationData.Reset();
 	LastBuildError.Reset();
 	bLastBuildSucceeded = false;
@@ -101,6 +114,202 @@ bool UMobileSurfaceNavComponent::HasValidNavigationData() const
 bool UMobileSurfaceNavComponent::WasLastBuildSuccessful() const
 {
 	return bLastBuildSucceeded;
+}
+
+int32 UMobileSurfaceNavComponent::GetPortalCount() const
+{
+	return NavigationData.Portals.Num();
+}
+
+int32 UMobileSurfaceNavComponent::GetRegionCount() const
+{
+	return NavigationData.Regions.Num();
+}
+
+int32 UMobileSurfaceNavComponent::GetRuntimeStateRevision() const
+{
+	return NavigationData.RuntimeStateRevision;
+}
+
+bool UMobileSurfaceNavComponent::SetPortalOpen(const int32 PortalIndex, const bool bOpen)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex].bOpen = bOpen;
+	NavigationData.PortalRuntimeStates[PortalIndex].bUserModified = true;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetPortalCostMultiplier(const int32 PortalIndex, const float CostMultiplier)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex].CostMultiplier = FMath::Max(0.001f, CostMultiplier);
+	NavigationData.PortalRuntimeStates[PortalIndex].bUserModified = true;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetPortalExtraCost(const int32 PortalIndex, const float ExtraCost)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex].ExtraCost = FMath::Max(0.0f, ExtraCost);
+	NavigationData.PortalRuntimeStates[PortalIndex].bUserModified = true;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetPortalEffectiveWidthOverride(const int32 PortalIndex, const float EffectiveWidthOverride)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex].EffectiveWidthOverride = FMath::Max(0.0f, EffectiveWidthOverride);
+	NavigationData.PortalRuntimeStates[PortalIndex].bUserModified = true;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetPortalTag(const int32 PortalIndex, const FName PortalTag)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex].PortalTag = PortalTag;
+	NavigationData.PortalRuntimeStates[PortalIndex].bUserModified = true;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::ResetPortalRuntimeState(const int32 PortalIndex)
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+	{
+		return false;
+	}
+
+	NavigationData.PortalRuntimeStates[PortalIndex] = FMobileSurfaceNavPortalRuntimeState();
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetRegionEnabled(const int32 RegionId, const bool bEnabled)
+{
+	if (!NavigationData.RegionRuntimeStates.IsValidIndex(RegionId))
+	{
+		return false;
+	}
+
+	NavigationData.RegionRuntimeStates[RegionId].bEnabled = bEnabled;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetRegionCostMultiplier(const int32 RegionId, const float CostMultiplier)
+{
+	if (!NavigationData.RegionRuntimeStates.IsValidIndex(RegionId))
+	{
+		return false;
+	}
+
+	NavigationData.RegionRuntimeStates[RegionId].CostMultiplier = FMath::Max(0.001f, CostMultiplier);
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetRegionAreaTag(const int32 RegionId, const FName AreaTag)
+{
+	if (!NavigationData.RegionRuntimeStates.IsValidIndex(RegionId))
+	{
+		return false;
+	}
+
+	NavigationData.RegionRuntimeStates[RegionId].AreaTag = AreaTag;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::ResetRegionRuntimeState(const int32 RegionId)
+{
+	if (!NavigationData.RegionRuntimeStates.IsValidIndex(RegionId))
+	{
+		return false;
+	}
+
+	NavigationData.RegionRuntimeStates[RegionId] = FMobileSurfaceNavRegionRuntimeState();
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+void UMobileSurfaceNavComponent::ResetAllRuntimeState()
+{
+	for (FMobileSurfaceNavPortalRuntimeState& PortalState : NavigationData.PortalRuntimeStates)
+	{
+		PortalState = FMobileSurfaceNavPortalRuntimeState();
+	}
+
+	for (FMobileSurfaceNavRegionRuntimeState& RegionState : NavigationData.RegionRuntimeStates)
+	{
+		RegionState = FMobileSurfaceNavRegionRuntimeState();
+	}
+
+	MarkRuntimeStateDirty();
+}
+
+void UMobileSurfaceNavComponent::OpenSelectedPortal()
+{
+	SetPortalOpen(SelectedPortalIndex, true);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::CloseSelectedPortal()
+{
+	SetPortalOpen(SelectedPortalIndex, false);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::ToggleSelectedPortal()
+{
+	if (!NavigationData.PortalRuntimeStates.IsValidIndex(SelectedPortalIndex))
+	{
+		return;
+	}
+
+	SetPortalOpen(SelectedPortalIndex, !NavigationData.PortalRuntimeStates[SelectedPortalIndex].bOpen);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::ResetSelectedPortalRuntimeState()
+{
+	ResetPortalRuntimeState(SelectedPortalIndex);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::EnableSelectedRegion()
+{
+	SetRegionEnabled(SelectedRegionId, true);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::DisableSelectedRegion()
+{
+	SetRegionEnabled(SelectedRegionId, false);
+	DrawNavigationDebug(DebugDuration);
 }
 
 const FMobileSurfaceNavData& UMobileSurfaceNavComponent::GetNavigationData() const
@@ -134,6 +343,18 @@ USceneComponent* UMobileSurfaceNavComponent::GetNavigationSpaceComponent() const
 	}
 
 	return GetNavigationSourceMeshComponent();
+}
+
+void UMobileSurfaceNavComponent::MarkRuntimeStateDirty()
+{
+	++NavigationData.RuntimeStateRevision;
+	CurrentDebugPath = FMobileSurfaceNavPath();
+	RefreshPortalLabelComponents();
+
+	if (bAutoDrawDebugOnRuntimeStateChange)
+	{
+		DrawNavigationDebug(DebugDuration);
+	}
 }
 
 void UMobileSurfaceNavComponent::BeginPlay()
@@ -178,6 +399,7 @@ void UMobileSurfaceNavComponent::EndPlay(const EEndPlayReason::Type EndPlayReaso
 	}
 
 	DestroyDebugAgents();
+	DestroyPortalLabelComponents();
 	Super::EndPlay(EndPlayReason);
 }
 
@@ -369,4 +591,86 @@ void UMobileSurfaceNavComponent::DestroyDebugAgents()
 	}
 
 	SpawnedDebugAgents.Reset();
+}
+
+void UMobileSurfaceNavComponent::RefreshPortalLabelComponents()
+{
+	if (!bDrawPortalLabels || !bDrawPortals || !NavigationData.bIsValid)
+	{
+		DestroyPortalLabelComponents();
+		return;
+	}
+
+	AActor* Owner = GetOwner();
+	USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
+	if (!Owner || !SpaceComponent)
+	{
+		DestroyPortalLabelComponents();
+		return;
+	}
+
+	while (PortalLabelComponents.Num() > NavigationData.Portals.Num())
+	{
+		if (UTextRenderComponent* LabelComponent = PortalLabelComponents.Pop(EAllowShrinking::No))
+		{
+			LabelComponent->DestroyComponent();
+		}
+	}
+
+	while (PortalLabelComponents.Num() < NavigationData.Portals.Num())
+	{
+		UTextRenderComponent* LabelComponent = NewObject<UTextRenderComponent>(Owner, NAME_None, RF_Transient);
+		if (!LabelComponent)
+		{
+			break;
+		}
+
+		LabelComponent->SetupAttachment(SpaceComponent);
+		LabelComponent->SetMobility(EComponentMobility::Movable);
+		LabelComponent->SetHorizontalAlignment(EHTA_Center);
+		LabelComponent->SetVerticalAlignment(EVRTA_TextCenter);
+		LabelComponent->SetWorldSize(18.0f);
+		LabelComponent->SetHiddenInGame(false);
+		LabelComponent->RegisterComponent();
+		PortalLabelComponents.Add(LabelComponent);
+	}
+
+	for (int32 PortalIndex = 0; PortalIndex < PortalLabelComponents.Num(); ++PortalIndex)
+	{
+		UTextRenderComponent* LabelComponent = PortalLabelComponents[PortalIndex];
+		if (!LabelComponent || !NavigationData.Portals.IsValidIndex(PortalIndex))
+		{
+			continue;
+		}
+
+		const FMobileSurfaceNavPortal& Portal = NavigationData.Portals[PortalIndex];
+		const bool bIsClosed = NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex) && !NavigationData.PortalRuntimeStates[PortalIndex].bOpen;
+		const bool bIsModified = NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex) &&
+			(NavigationData.PortalRuntimeStates[PortalIndex].CostMultiplier > 1.01f ||
+			 NavigationData.PortalRuntimeStates[PortalIndex].ExtraCost > 0.0f ||
+			 NavigationData.PortalRuntimeStates[PortalIndex].EffectiveWidthOverride > 0.0f);
+		const FColor LabelColor = bIsClosed ? FColor::Red : bIsModified ? FColor::Orange : FColor::Green;
+		const FString LabelText = PortalIndex == SelectedPortalIndex
+			? FString::Printf(TEXT("[P%d]"), PortalIndex)
+			: FString::Printf(TEXT("P%d"), PortalIndex);
+
+		LabelComponent->SetText(FText::FromString(LabelText));
+		LabelComponent->SetTextRenderColor(LabelColor);
+		LabelComponent->SetRelativeLocation(Portal.Center + FVector(0.0, 0.0, 35.0));
+		LabelComponent->SetRelativeRotation(FRotator(60.0, 0.0, 0.0));
+		LabelComponent->SetVisibility(true);
+	}
+}
+
+void UMobileSurfaceNavComponent::DestroyPortalLabelComponents()
+{
+	for (UTextRenderComponent* LabelComponent : PortalLabelComponents)
+	{
+		if (LabelComponent)
+		{
+			LabelComponent->DestroyComponent();
+		}
+	}
+
+	PortalLabelComponents.Reset();
 }

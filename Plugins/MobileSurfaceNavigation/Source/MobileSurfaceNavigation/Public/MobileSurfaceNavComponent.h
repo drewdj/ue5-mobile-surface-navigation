@@ -9,6 +9,7 @@
 class UStaticMeshComponent;
 class USceneComponent;
 class AMobileSurfaceNavAgent;
+class UTextRenderComponent;
 
 UCLASS(ClassGroup = (Navigation), BlueprintType, Blueprintable, meta = (BlueprintSpawnableComponent))
 class MOBILESURFACENAVIGATION_API UMobileSurfaceNavComponent : public UActorComponent
@@ -27,6 +28,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
 	bool FindPathLocal(const FVector& StartLocalPosition, const FVector& EndLocalPosition, FMobileSurfaceNavPath& OutPath, float AgentRadius = 0.0f) const;
 
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	bool FindPathLocalWithParams(const FVector& StartLocalPosition, const FVector& EndLocalPosition, const FMobileSurfacePathQueryParams& Params, FMobileSurfaceNavPath& OutPath) const;
+
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	int32 FindContainingTriangle(const FVector& LocalPosition) const;
 
@@ -41,6 +45,66 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	bool WasLastBuildSuccessful() const;
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	int32 GetPortalCount() const;
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	int32 GetRegionCount() const;
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	int32 GetRuntimeStateRevision() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetPortalOpen(int32 PortalIndex, bool bOpen);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetPortalCostMultiplier(int32 PortalIndex, float CostMultiplier);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetPortalExtraCost(int32 PortalIndex, float ExtraCost);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetPortalEffectiveWidthOverride(int32 PortalIndex, float EffectiveWidthOverride);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetPortalTag(int32 PortalIndex, FName PortalTag);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool ResetPortalRuntimeState(int32 PortalIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetRegionEnabled(int32 RegionId, bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetRegionCostMultiplier(int32 RegionId, float CostMultiplier);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool SetRegionAreaTag(int32 RegionId, FName AreaTag);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	bool ResetRegionRuntimeState(int32 RegionId);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
+	void ResetAllRuntimeState();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void OpenSelectedPortal();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void CloseSelectedPortal();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void ToggleSelectedPortal();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void ResetSelectedPortalRuntimeState();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void EnableSelectedRegion();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void DisableSelectedRegion();
 
 	const FMobileSurfaceNavData& GetNavigationData() const;
 
@@ -58,10 +122,13 @@ protected:
 private:
 	UStaticMeshComponent* GetNavigationSourceMeshComponent() const;
 	USceneComponent* GetNavigationSpaceComponent() const;
+	void MarkRuntimeStateDirty();
 	void GenerateDebugPath();
 	void DrawDebugPath(float Duration) const;
 	void SpawnDebugAgents();
 	void DestroyDebugAgents();
+	void RefreshPortalLabelComponents();
+	void DestroyPortalLabelComponents();
 	void UpdateTickState();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true", UseComponentPicker, AllowedClasses = "/Script/Engine.StaticMeshComponent"))
@@ -86,6 +153,9 @@ private:
 	bool bAutoDrawDebugAfterRebuild = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bAutoDrawDebugOnRuntimeStateChange = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawVertices = true;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
@@ -99,6 +169,15 @@ private:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawPortals = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawPortalLabels = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Editor Tools", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
+	int32 SelectedPortalIndex = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Editor Tools", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
+	int32 SelectedRegionId = INDEX_NONE;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug Paths", meta = (AllowPrivateAccess = "true"))
 	bool bRebuildOnBeginPlay = true;
@@ -159,4 +238,7 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AMobileSurfaceNavAgent>> SpawnedDebugAgents;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UTextRenderComponent>> PortalLabelComponents;
 };

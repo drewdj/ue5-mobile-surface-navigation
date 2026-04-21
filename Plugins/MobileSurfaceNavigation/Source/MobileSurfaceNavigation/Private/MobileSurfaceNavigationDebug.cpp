@@ -26,6 +26,27 @@ namespace MobileSurfaceNavigation::Debug
 
 		return Palette[RegionId % UE_ARRAY_COUNT(Palette)];
 	}
+
+	static FColor GetPortalColor(const FMobileSurfaceNavData& NavData, const int32 PortalIndex)
+	{
+		if (!NavData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+		{
+			return FColor::Magenta;
+		}
+
+		const FMobileSurfaceNavPortalRuntimeState& PortalState = NavData.PortalRuntimeStates[PortalIndex];
+		if (!PortalState.bOpen)
+		{
+			return FColor::Red;
+		}
+
+		if (PortalState.CostMultiplier > 1.01f || PortalState.ExtraCost > 0.0f || PortalState.EffectiveWidthOverride > 0.0f)
+		{
+			return FColor::Orange;
+		}
+
+		return FColor::Green;
+	}
 }
 
 void FMobileSurfaceNavigationDebug::DrawNavData(
@@ -92,17 +113,26 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 
 	if (Settings.bDrawPortals)
 	{
-		for (const FMobileSurfaceNavPortal& Portal : NavData.Portals)
+		for (int32 PortalIndex = 0; PortalIndex < NavData.Portals.Num(); ++PortalIndex)
 		{
+			const FMobileSurfaceNavPortal& Portal = NavData.Portals[PortalIndex];
 			if (!NavData.Triangles.IsValidIndex(Portal.TriangleA) || !NavData.Triangles.IsValidIndex(Portal.TriangleB))
 			{
 				continue;
 			}
 
+			const FColor PortalColor = MobileSurfaceNavigation::Debug::GetPortalColor(NavData, PortalIndex);
 			const FVector CenterA = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleA].Center);
 			const FVector CenterB = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleB].Center);
-			DrawDebugLine(World, CenterA, CenterB, FColor::Magenta, false, Settings.Duration, DepthPriority, Settings.LineThickness * 1.5f);
-			DrawDebugPoint(World, LocalToWorld.TransformPosition(Portal.Center), Settings.VertexSize * 0.75f, FColor::Magenta, false, Settings.Duration, DepthPriority);
+			DrawDebugLine(World, CenterA, CenterB, PortalColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 1.5f);
+			const FVector PortalCenter = LocalToWorld.TransformPosition(Portal.Center);
+			DrawDebugPoint(World, PortalCenter, Settings.VertexSize * 0.75f, PortalColor, false, Settings.Duration, DepthPriority);
+
+			if (PortalIndex == Settings.HighlightPortalIndex)
+			{
+				DrawDebugLine(World, CenterA + FVector(0.0, 0.0, 8.0), CenterB + FVector(0.0, 0.0, 8.0), FColor::White, false, Settings.Duration, DepthPriority, Settings.LineThickness * 3.0f);
+				DrawDebugPoint(World, PortalCenter + FVector(0.0, 0.0, 8.0), Settings.VertexSize * 1.5f, FColor::White, false, Settings.Duration, DepthPriority);
+			}
 		}
 	}
 

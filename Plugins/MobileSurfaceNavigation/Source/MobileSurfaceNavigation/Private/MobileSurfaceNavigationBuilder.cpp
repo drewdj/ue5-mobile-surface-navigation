@@ -673,6 +673,9 @@ namespace MobileSurfaceNavigation::Builder
 				}
 			}
 		}
+
+		OutNavData.RegionRuntimeStates.SetNum(OutNavData.Regions.Num());
+		OutNavData.PortalRuntimeStates.SetNum(OutNavData.Portals.Num());
 	}
 
 	static bool TriangulateRegion(

@@ -106,6 +106,96 @@ namespace MobileSurfaceNavigation::Pathfinder
 		return ComputeBoundaryClearanceSquared(NavData, LocalPosition) >= FMath::Square(static_cast<double>(AgentRadius));
 	}
 
+	static bool IsTagAllowed(const FName Tag, const TArray<FName>& AllowedTags, const TArray<FName>& ExcludedTags)
+	{
+		if (ExcludedTags.Contains(Tag))
+		{
+			return false;
+		}
+
+		return AllowedTags.IsEmpty() || AllowedTags.Contains(Tag);
+	}
+
+	static const FMobileSurfaceNavRegionRuntimeState* GetRegionState(const FMobileSurfaceNavData& NavData, const int32 RegionId)
+	{
+		return NavData.RegionRuntimeStates.IsValidIndex(RegionId) ? &NavData.RegionRuntimeStates[RegionId] : nullptr;
+	}
+
+	static const FMobileSurfaceNavPortalRuntimeState* GetPortalState(const FMobileSurfaceNavData& NavData, const int32 PortalIndex)
+	{
+		return NavData.PortalRuntimeStates.IsValidIndex(PortalIndex) ? &NavData.PortalRuntimeStates[PortalIndex] : nullptr;
+	}
+
+	static bool IsTriangleAllowed(const FMobileSurfaceNavData& NavData, const int32 TriangleIndex, const FMobileSurfacePathQueryParams& Params)
+	{
+		if (!NavData.Triangles.IsValidIndex(TriangleIndex))
+		{
+			return false;
+		}
+
+		const FMobileSurfaceNavRegionRuntimeState* RegionState = GetRegionState(NavData, NavData.Triangles[TriangleIndex].RegionId);
+		if (!RegionState)
+		{
+			return true;
+		}
+
+		return RegionState->bEnabled && IsTagAllowed(RegionState->AreaTag, Params.AllowedAreaTags, Params.ExcludedAreaTags);
+	}
+
+	static bool IsPortalAllowed(
+		const FMobileSurfaceNavData& NavData,
+		const FMobileSurfaceTriangleAdjacency& Adjacency,
+		const FMobileSurfacePathQueryParams& Params)
+	{
+		const FMobileSurfaceNavPortalRuntimeState* PortalState = GetPortalState(NavData, Adjacency.PortalIndex);
+		if (PortalState)
+		{
+			if (!PortalState->bOpen && !Params.bCanUseClosedPortals)
+			{
+				return false;
+			}
+
+			if (!IsTagAllowed(PortalState->PortalTag, Params.AllowedPortalTags, Params.ExcludedPortalTags))
+			{
+				return false;
+			}
+		}
+
+		const float EffectivePortalWidth = PortalState && PortalState->EffectiveWidthOverride > 0.0f
+			? PortalState->EffectiveWidthOverride
+			: Adjacency.PortalWidth;
+
+		if (Params.AgentRadius > 0.0f)
+		{
+			if (EffectivePortalWidth < Params.AgentRadius * 2.0f || Adjacency.BoundaryClearance < Params.AgentRadius)
+			{
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	static double GetTriangleCostMultiplier(const FMobileSurfaceNavData& NavData, const int32 TriangleIndex)
+	{
+		const FMobileSurfaceNavRegionRuntimeState* RegionState = NavData.Triangles.IsValidIndex(TriangleIndex)
+			? GetRegionState(NavData, NavData.Triangles[TriangleIndex].RegionId)
+			: nullptr;
+
+		return RegionState ? FMath::Max(0.001f, RegionState->CostMultiplier) : 1.0;
+	}
+
+	static double GetPortalTraversalCost(
+		const FMobileSurfaceNavData& NavData,
+		const FMobileSurfaceTriangleAdjacency& Adjacency,
+		const int32 NeighborTriangle)
+	{
+		const FMobileSurfaceNavPortalRuntimeState* PortalState = GetPortalState(NavData, Adjacency.PortalIndex);
+		const double PortalCostMultiplier = PortalState ? FMath::Max(0.001f, PortalState->CostMultiplier) : 1.0;
+		const double PortalExtraCost = PortalState ? FMath::Max(0.0f, PortalState->ExtraCost) : 0.0;
+		return (Adjacency.TravelCost * GetTriangleCostMultiplier(NavData, NeighborTriangle) * PortalCostMultiplier) + PortalExtraCost;
+	}
+
 	static double TriArea2(const FVector2D& A, const FVector2D& B, const FVector2D& C)
 	{
 		const FVector2D AB = B - A;
@@ -346,14 +436,22 @@ bool FMobileSurfacePathfinder::FindPath(
 		return false;
 	}
 
-	if (!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, StartLocalPosition, Params.AgentRadius) ||
-		!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, EndLocalPosition, Params.AgentRadius))
+	if (!MobileSurfaceNavigation::Pathfinder::IsTriangleAllowed(NavData, FallbackStartTriangle, Params) ||
+		!MobileSurfaceNavigation::Pathfinder::IsTriangleAllowed(NavData, FallbackEndTriangle, Params))
+	{
+		return false;
+	}
+
+	if (Params.bRequireStartAndEndClearance &&
+		(!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, StartLocalPosition, Params.AgentRadius) ||
+		 !MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, EndLocalPosition, Params.AgentRadius)))
 	{
 		return false;
 	}
 
 	OutPath.StartTriangleIndex = FallbackStartTriangle;
 	OutPath.EndTriangleIndex = FallbackEndTriangle;
+	OutPath.RuntimeStateRevision = NavData.RuntimeStateRevision;
 
 	if (FallbackStartTriangle == FallbackEndTriangle)
 	{
@@ -410,15 +508,13 @@ bool FMobileSurfacePathfinder::FindPath(
 				continue;
 			}
 
-			if (Params.AgentRadius > 0.0f)
+			if (!MobileSurfaceNavigation::Pathfinder::IsTriangleAllowed(NavData, NeighborTriangle, Params) ||
+				!MobileSurfaceNavigation::Pathfinder::IsPortalAllowed(NavData, Adjacency, Params))
 			{
-				if (Adjacency.PortalWidth < Params.AgentRadius * 2.0f || Adjacency.BoundaryClearance < Params.AgentRadius)
-				{
-					continue;
-				}
+				continue;
 			}
 
-			const double TentativeG = Records[CurrentTriangle].GScore + Adjacency.TravelCost;
+			const double TentativeG = Records[CurrentTriangle].GScore + MobileSurfaceNavigation::Pathfinder::GetPortalTraversalCost(NavData, Adjacency, NeighborTriangle);
 			if (TentativeG < Records[NeighborTriangle].GScore)
 			{
 				Records[NeighborTriangle].CameFrom = CurrentTriangle;

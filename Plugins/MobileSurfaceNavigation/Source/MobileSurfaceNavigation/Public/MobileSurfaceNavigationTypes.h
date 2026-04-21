@@ -90,6 +90,21 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavRegion
 };
 
 USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavRegionRuntimeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	bool bEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FName AreaTag = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "0.001"))
+	float CostMultiplier = 1.0f;
+};
+
+USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPortal
 {
 	GENERATED_BODY()
@@ -114,6 +129,30 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPortal
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	float Width = 0.0f;
+};
+
+USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPortalRuntimeState
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	bool bOpen = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FName PortalTag = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "0.001"))
+	float CostMultiplier = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "0.0"))
+	float ExtraCost = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "0.0"))
+	float EffectiveWidthOverride = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	bool bUserModified = false;
 };
 
 USTRUCT(BlueprintType)
@@ -162,6 +201,24 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfacePathQueryParams
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	float AgentRadius = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	bool bRequireStartAndEndClearance = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	bool bCanUseClosedPortals = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> AllowedAreaTags;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> ExcludedAreaTags;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> AllowedPortalTags;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> ExcludedPortalTags;
 };
 
 USTRUCT(BlueprintType)
@@ -205,8 +262,14 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceNavRegion> Regions;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavRegionRuntimeState> RegionRuntimeStates;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceNavPortal> Portals;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavPortalRuntimeState> PortalRuntimeStates;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceTriangleAdjacencyList> TriangleAdjacency;
@@ -226,6 +289,9 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	FString BuildNotes;
 
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 RuntimeStateRevision = 0;
+
 	void Reset()
 	{
 		Vertices.Reset();
@@ -233,12 +299,15 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 		Edges.Reset();
 		BoundaryLoops.Reset();
 		Regions.Reset();
+		RegionRuntimeStates.Reset();
 		Portals.Reset();
+		PortalRuntimeStates.Reset();
 		TriangleAdjacency.Reset();
 		TriangleBounds.Reset();
 		LocalBounds = FBox(EForceInit::ForceInit);
 		bIsValid = false;
 		BuildNotes.Reset();
+		RuntimeStateRevision = 0;
 	}
 };
 
@@ -267,4 +336,7 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPath
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	float EstimatedLength = 0.0f;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 RuntimeStateRevision = 0;
 };
