@@ -136,6 +136,25 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 		}
 	}
 
+	if (Settings.bDrawSpecialLinks)
+	{
+		for (int32 LinkIndex = 0; LinkIndex < NavData.SpecialLinks.Num(); ++LinkIndex)
+		{
+			const FMobileSurfaceNavSpecialLink& Link = NavData.SpecialLinks[LinkIndex];
+			const FColor LinkColor = LinkIndex == Settings.HighlightSpecialLinkIndex ? FColor::White : Link.bEnabled ? FColor::Cyan : FColor::Red;
+			const FVector From = LocalToWorld.TransformPosition(Link.FromLocalPosition);
+			const FVector To = LocalToWorld.TransformPosition(Link.ToLocalPosition);
+			DrawDebugLine(World, From, To, LinkColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 3.0f);
+			DrawDebugPoint(World, From, Settings.VertexSize * 1.5f, LinkColor, false, Settings.Duration, DepthPriority);
+			DrawDebugPoint(World, To, Settings.VertexSize * 1.5f, LinkColor, false, Settings.Duration, DepthPriority);
+
+			const FString Label = Link.LinkId.IsNone()
+				? FString::Printf(TEXT("L%d"), LinkIndex)
+				: FString::Printf(TEXT("L%d %s"), LinkIndex, *Link.LinkId.ToString());
+			DrawDebugString(World, (From + To) * 0.5f + FVector(0.0, 0.0, 35.0), Label, nullptr, LinkColor, Settings.Duration, false, 1.0f);
+		}
+	}
+
 	if (Settings.bDrawVertices)
 	{
 		for (const int32 VertexIndex : UsedVertexIndices)

@@ -88,6 +88,38 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Runtime State")
 	void ResetAllRuntimeState();
 
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	int32 AddSpecialLinkFromLocalPoints(
+		FName LinkId,
+		const FVector& FromLocalPosition,
+		const FVector& ToLocalPosition,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic,
+		bool bBidirectional = true,
+		float Cost = 100.0f,
+		FName LinkTag = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	int32 AddSpecialLinkFromWorldPoints(
+		FName LinkId,
+		const FVector& FromWorldPosition,
+		const FVector& ToWorldPosition,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic,
+		bool bBidirectional = true,
+		float Cost = 100.0f,
+		FName LinkTag = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	bool SetSpecialLinkEnabled(int32 LinkIndex, bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	bool RemoveSpecialLink(int32 LinkIndex);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	void ClearSpecialLinks();
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation|Special Links")
+	int32 GetSpecialLinkCount() const;
+
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
 	void OpenSelectedPortal();
 
@@ -106,6 +138,12 @@ public:
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
 	void DisableSelectedRegion();
 
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void EnableSelectedSpecialLink();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
+	void DisableSelectedSpecialLink();
+
 	const FMobileSurfaceNavData& GetNavigationData() const;
 
 	const FString& GetLastBuildError() const;
@@ -123,11 +161,13 @@ private:
 	UStaticMeshComponent* GetNavigationSourceMeshComponent() const;
 	USceneComponent* GetNavigationSpaceComponent() const;
 	void MarkRuntimeStateDirty();
+	bool ResolveSpecialLinkTriangles(FMobileSurfaceNavSpecialLink& Link) const;
 	void GenerateDebugPath();
 	void DrawDebugPath(float Duration) const;
 	void SpawnDebugAgents();
 	void DestroyDebugAgents();
 	void RefreshPortalLabelComponents();
+	void UpdatePortalLabelFacing();
 	void DestroyPortalLabelComponents();
 	void UpdateTickState();
 
@@ -173,11 +213,17 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawPortalLabels = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawSpecialLinks = false;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Editor Tools", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
 	int32 SelectedPortalIndex = INDEX_NONE;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Editor Tools", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
 	int32 SelectedRegionId = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Editor Tools", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
+	int32 SelectedSpecialLinkIndex = INDEX_NONE;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug Paths", meta = (AllowPrivateAccess = "true"))
 	bool bRebuildOnBeginPlay = true;

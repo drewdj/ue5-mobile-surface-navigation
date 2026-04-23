@@ -13,6 +13,8 @@
 #include "DrawDebugHelpers.h"
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Kismet/GameplayStatics.h"
 
 UMobileSurfaceNavComponent::UMobileSurfaceNavComponent()
 {
@@ -64,7 +66,9 @@ void UMobileSurfaceNavComponent::DrawNavigationDebug(const float Duration)
 	Settings.bDrawTriangleNormals = bDrawTriangleNormals;
 	Settings.bDrawPortals = bDrawPortals;
 	Settings.bDrawPortalLabels = bDrawPortalLabels;
+	Settings.bDrawSpecialLinks = bDrawSpecialLinks;
 	Settings.HighlightPortalIndex = SelectedPortalIndex;
+	Settings.HighlightSpecialLinkIndex = SelectedSpecialLinkIndex;
 	Settings.Duration = Duration;
 
 	FMobileSurfaceNavigationDebug::DrawNavData(GetWorld(), GetNavigationSpaceComponent(), NavigationData, Settings);
@@ -271,6 +275,109 @@ void UMobileSurfaceNavComponent::ResetAllRuntimeState()
 	MarkRuntimeStateDirty();
 }
 
+int32 UMobileSurfaceNavComponent::AddSpecialLinkFromLocalPoints(
+	const FName LinkId,
+	const FVector& FromLocalPosition,
+	const FVector& ToLocalPosition,
+	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const bool bBidirectional,
+	const float Cost,
+	const FName LinkTag)
+{
+	if (!NavigationData.bIsValid)
+	{
+		return INDEX_NONE;
+	}
+
+	FMobileSurfaceNavSpecialLink Link;
+	Link.LinkId = LinkId;
+	Link.LinkType = LinkType;
+	Link.bBidirectional = bBidirectional;
+	Link.Cost = FMath::Max(0.0f, Cost);
+	Link.LinkTag = LinkTag;
+	Link.FromLocalPosition = FromLocalPosition;
+	Link.ToLocalPosition = ToLocalPosition;
+
+	if (!ResolveSpecialLinkTriangles(Link))
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 LinkIndex = NavigationData.SpecialLinks.Add(Link);
+	MarkRuntimeStateDirty();
+	return LinkIndex;
+}
+
+int32 UMobileSurfaceNavComponent::AddSpecialLinkFromWorldPoints(
+	const FName LinkId,
+	const FVector& FromWorldPosition,
+	const FVector& ToWorldPosition,
+	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const bool bBidirectional,
+	const float Cost,
+	const FName LinkTag)
+{
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
+	if (!SpaceComponent)
+	{
+		return INDEX_NONE;
+	}
+
+	const FTransform WorldToLocal = SpaceComponent->GetComponentTransform().Inverse();
+	return AddSpecialLinkFromLocalPoints(
+		LinkId,
+		WorldToLocal.TransformPosition(FromWorldPosition),
+		WorldToLocal.TransformPosition(ToWorldPosition),
+		LinkType,
+		bBidirectional,
+		Cost,
+		LinkTag);
+}
+
+bool UMobileSurfaceNavComponent::SetSpecialLinkEnabled(const int32 LinkIndex, const bool bEnabled)
+{
+	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
+	{
+		return false;
+	}
+
+	NavigationData.SpecialLinks[LinkIndex].bEnabled = bEnabled;
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::RemoveSpecialLink(const int32 LinkIndex)
+{
+	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
+	{
+		return false;
+	}
+
+	NavigationData.SpecialLinks.RemoveAt(LinkIndex);
+	if (SelectedSpecialLinkIndex == LinkIndex)
+	{
+		SelectedSpecialLinkIndex = INDEX_NONE;
+	}
+	else if (SelectedSpecialLinkIndex > LinkIndex)
+	{
+		--SelectedSpecialLinkIndex;
+	}
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+void UMobileSurfaceNavComponent::ClearSpecialLinks()
+{
+	NavigationData.SpecialLinks.Reset();
+	SelectedSpecialLinkIndex = INDEX_NONE;
+	MarkRuntimeStateDirty();
+}
+
+int32 UMobileSurfaceNavComponent::GetSpecialLinkCount() const
+{
+	return NavigationData.SpecialLinks.Num();
+}
+
 void UMobileSurfaceNavComponent::OpenSelectedPortal()
 {
 	SetPortalOpen(SelectedPortalIndex, true);
@@ -309,6 +416,18 @@ void UMobileSurfaceNavComponent::EnableSelectedRegion()
 void UMobileSurfaceNavComponent::DisableSelectedRegion()
 {
 	SetRegionEnabled(SelectedRegionId, false);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::EnableSelectedSpecialLink()
+{
+	SetSpecialLinkEnabled(SelectedSpecialLinkIndex, true);
+	DrawNavigationDebug(DebugDuration);
+}
+
+void UMobileSurfaceNavComponent::DisableSelectedSpecialLink()
+{
+	SetSpecialLinkEnabled(SelectedSpecialLinkIndex, false);
 	DrawNavigationDebug(DebugDuration);
 }
 
@@ -355,6 +474,23 @@ void UMobileSurfaceNavComponent::MarkRuntimeStateDirty()
 	{
 		DrawNavigationDebug(DebugDuration);
 	}
+}
+
+bool UMobileSurfaceNavComponent::ResolveSpecialLinkTriangles(FMobileSurfaceNavSpecialLink& Link) const
+{
+	Link.FromTriangleIndex = FindContainingTriangle(Link.FromLocalPosition);
+	if (Link.FromTriangleIndex == INDEX_NONE)
+	{
+		Link.FromTriangleIndex = FindNearestTriangle(Link.FromLocalPosition);
+	}
+
+	Link.ToTriangleIndex = FindContainingTriangle(Link.ToLocalPosition);
+	if (Link.ToTriangleIndex == INDEX_NONE)
+	{
+		Link.ToTriangleIndex = FindNearestTriangle(Link.ToLocalPosition);
+	}
+
+	return Link.FromTriangleIndex != INDEX_NONE && Link.ToTriangleIndex != INDEX_NONE;
 }
 
 void UMobileSurfaceNavComponent::BeginPlay()
@@ -410,6 +546,8 @@ void UMobileSurfaceNavComponent::TickComponent(
 {
 	Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
+	UpdatePortalLabelFacing();
+
 	if (bDrawDebugEveryTick && NavigationData.bIsValid)
 	{
 		DrawNavigationDebug(0.0f);
@@ -447,7 +585,8 @@ void UMobileSurfaceNavComponent::PostEditChangeProperty(FPropertyChangedEvent& P
 
 void UMobileSurfaceNavComponent::UpdateTickState()
 {
-	SetComponentTickEnabled((bDrawDebugEveryTick || bAutoGenerateDebugPaths) && NavigationData.bIsValid);
+	const bool bNeedsPortalLabelTick = bDrawPortalLabels && bDrawPortals && NavigationData.bIsValid;
+	SetComponentTickEnabled((bDrawDebugEveryTick || bAutoGenerateDebugPaths || bNeedsPortalLabelTick) && NavigationData.bIsValid);
 }
 
 void UMobileSurfaceNavComponent::GenerateDebugPath()
@@ -657,8 +796,47 @@ void UMobileSurfaceNavComponent::RefreshPortalLabelComponents()
 		LabelComponent->SetText(FText::FromString(LabelText));
 		LabelComponent->SetTextRenderColor(LabelColor);
 		LabelComponent->SetRelativeLocation(Portal.Center + FVector(0.0, 0.0, 35.0));
-		LabelComponent->SetRelativeRotation(FRotator(60.0, 0.0, 0.0));
 		LabelComponent->SetVisibility(true);
+	}
+
+	UpdatePortalLabelFacing();
+	UpdateTickState();
+}
+
+void UMobileSurfaceNavComponent::UpdatePortalLabelFacing()
+{
+	if (!bDrawPortalLabels || !bDrawPortals || !NavigationData.bIsValid || PortalLabelComponents.IsEmpty())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(World, 0);
+	if (!CameraManager)
+	{
+		return;
+	}
+
+	for (int32 PortalIndex = 0; PortalIndex < PortalLabelComponents.Num(); ++PortalIndex)
+	{
+		UTextRenderComponent* LabelComponent = PortalLabelComponents[PortalIndex];
+		if (!LabelComponent || !NavigationData.Portals.IsValidIndex(PortalIndex))
+		{
+			continue;
+		}
+
+		const FVector ToCamera = CameraManager->GetCameraLocation() - LabelComponent->GetComponentLocation();
+		if (ToCamera.IsNearlyZero())
+		{
+			continue;
+		}
+
+		LabelComponent->SetWorldRotation(ToCamera.Rotation());
 	}
 }
 

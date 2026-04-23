@@ -11,6 +11,16 @@ enum class EMobileSurfaceBoundaryKind : uint8
 	Hole = 2
 };
 
+UENUM(BlueprintType)
+enum class EMobileSurfaceNavSpecialLinkType : uint8
+{
+	Generic = 0,
+	Elevator = 1,
+	Ladder = 2,
+	Jump = 3,
+	Teleporter = 4
+};
+
 USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavVertex
 {
@@ -219,6 +229,12 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfacePathQueryParams
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	TArray<FName> ExcludedPortalTags;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> AllowedSpecialLinkTags;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TArray<FName> ExcludedSpecialLinkTags;
 };
 
 USTRUCT(BlueprintType)
@@ -230,16 +246,34 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
 	FName LinkId = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
-	int32 FromRegionId = INDEX_NONE;
+	EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
-	int32 ToRegionId = INDEX_NONE;
+	bool bEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	bool bBidirectional = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FName LinkTag = NAME_None;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "0.0"))
+	float Cost = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	float CostMultiplier = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	FVector FromLocalPosition = FVector::ZeroVector;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	FVector ToLocalPosition = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 FromTriangleIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 ToTriangleIndex = INDEX_NONE;
 };
 
 USTRUCT(BlueprintType)
@@ -304,6 +338,7 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 		PortalRuntimeStates.Reset();
 		TriangleAdjacency.Reset();
 		TriangleBounds.Reset();
+		SpecialLinks.Reset();
 		LocalBounds = FBox(EForceInit::ForceInit);
 		bIsValid = false;
 		BuildNotes.Reset();

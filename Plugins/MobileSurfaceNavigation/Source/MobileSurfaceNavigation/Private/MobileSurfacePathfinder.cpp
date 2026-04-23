@@ -18,6 +18,13 @@ namespace MobileSurfaceNavigation::Pathfinder
 		double FScore = TNumericLimits<double>::Max();
 	};
 
+	struct FTraversalStep
+	{
+		int32 PreviousTriangle = INDEX_NONE;
+		int32 PortalIndex = INDEX_NONE;
+		int32 SpecialLinkIndex = INDEX_NONE;
+	};
+
 	static bool HasHigherPriority(const FOpenNode& A, const FOpenNode& B)
 	{
 		return A.FScore < B.FScore;
@@ -176,6 +183,17 @@ namespace MobileSurfaceNavigation::Pathfinder
 		return true;
 	}
 
+	static bool IsSpecialLinkAllowed(
+		const FMobileSurfaceNavData& NavData,
+		const FMobileSurfaceNavSpecialLink& Link,
+		const FMobileSurfacePathQueryParams& Params)
+	{
+		return Link.bEnabled &&
+			IsTagAllowed(Link.LinkTag, Params.AllowedSpecialLinkTags, Params.ExcludedSpecialLinkTags) &&
+			IsTriangleAllowed(NavData, Link.FromTriangleIndex, Params) &&
+			IsTriangleAllowed(NavData, Link.ToTriangleIndex, Params);
+	}
+
 	static double GetTriangleCostMultiplier(const FMobileSurfaceNavData& NavData, const int32 TriangleIndex)
 	{
 		const FMobileSurfaceNavRegionRuntimeState* RegionState = NavData.Triangles.IsValidIndex(TriangleIndex)
@@ -208,11 +226,36 @@ namespace MobileSurfaceNavigation::Pathfinder
 		return FVector::DistSquared(A, B) <= FMath::Square(0.1);
 	}
 
+	static FVector GetClosestPointOnTriangle(
+		const FMobileSurfaceNavData& NavData,
+		const int32 TriangleIndex,
+		const FVector& LocalPosition)
+	{
+		if (!NavData.Triangles.IsValidIndex(TriangleIndex))
+		{
+			return LocalPosition;
+		}
+
+		const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
+		const FVector A = NavData.Vertices[Triangle.VertexIndices.X].LocalPosition;
+		const FVector B = NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition;
+		const FVector C = NavData.Vertices[Triangle.VertexIndices.Z].LocalPosition;
+		return FMath::ClosestPointOnTriangleToPoint(LocalPosition, A, B, C);
+	}
+
 	static void AddWaypointIfNeeded(TArray<FVector>& Waypoints, const FVector& Point)
 	{
 		if (Waypoints.IsEmpty() || !NearlySamePoint(Waypoints.Last(), Point))
 		{
 			Waypoints.Add(Point);
+		}
+	}
+
+	static void AppendWaypointsIfNeeded(TArray<FVector>& InOutWaypoints, const TArray<FVector>& NewWaypoints)
+	{
+		for (const FVector& Waypoint : NewWaypoints)
+		{
+			AddWaypointIfNeeded(InOutWaypoints, Waypoint);
 		}
 	}
 
@@ -442,9 +485,16 @@ bool FMobileSurfacePathfinder::FindPath(
 		return false;
 	}
 
+	const FVector ResolvedStartLocalPosition = StartTriangleIndex != INDEX_NONE
+		? StartLocalPosition
+		: MobileSurfaceNavigation::Pathfinder::GetClosestPointOnTriangle(NavData, FallbackStartTriangle, StartLocalPosition);
+	const FVector ResolvedEndLocalPosition = EndTriangleIndex != INDEX_NONE
+		? EndLocalPosition
+		: MobileSurfaceNavigation::Pathfinder::GetClosestPointOnTriangle(NavData, FallbackEndTriangle, EndLocalPosition);
+
 	if (Params.bRequireStartAndEndClearance &&
-		(!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, StartLocalPosition, Params.AgentRadius) ||
-		 !MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, EndLocalPosition, Params.AgentRadius)))
+		(!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, ResolvedStartLocalPosition, Params.AgentRadius) ||
+		 !MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, ResolvedEndLocalPosition, Params.AgentRadius)))
 	{
 		return false;
 	}
@@ -457,9 +507,9 @@ bool FMobileSurfacePathfinder::FindPath(
 	{
 		OutPath.bIsValid = true;
 		OutPath.TriangleIndices = { FallbackStartTriangle };
-		OutPath.RawWaypoints = { StartLocalPosition, EndLocalPosition };
+		OutPath.RawWaypoints = { ResolvedStartLocalPosition, ResolvedEndLocalPosition };
 		OutPath.Waypoints = OutPath.RawWaypoints;
-		OutPath.EstimatedLength = FVector::Distance(StartLocalPosition, EndLocalPosition);
+		OutPath.EstimatedLength = FVector::Distance(ResolvedStartLocalPosition, ResolvedEndLocalPosition);
 		return true;
 	}
 
@@ -467,7 +517,7 @@ bool FMobileSurfacePathfinder::FindPath(
 	{
 		double GScore = TNumericLimits<double>::Max();
 		double FScore = TNumericLimits<double>::Max();
-		int32 CameFrom = INDEX_NONE;
+		MobileSurfaceNavigation::Pathfinder::FTraversalStep CameFrom;
 		bool bClosed = false;
 	};
 
@@ -517,7 +567,47 @@ bool FMobileSurfacePathfinder::FindPath(
 			const double TentativeG = Records[CurrentTriangle].GScore + MobileSurfaceNavigation::Pathfinder::GetPortalTraversalCost(NavData, Adjacency, NeighborTriangle);
 			if (TentativeG < Records[NeighborTriangle].GScore)
 			{
-				Records[NeighborTriangle].CameFrom = CurrentTriangle;
+				Records[NeighborTriangle].CameFrom.PreviousTriangle = CurrentTriangle;
+				Records[NeighborTriangle].CameFrom.PortalIndex = Adjacency.PortalIndex;
+				Records[NeighborTriangle].CameFrom.SpecialLinkIndex = INDEX_NONE;
+				Records[NeighborTriangle].GScore = TentativeG;
+				Records[NeighborTriangle].FScore = TentativeG + FVector::Distance(
+					NavData.Triangles[NeighborTriangle].Center,
+					NavData.Triangles[FallbackEndTriangle].Center);
+				MobileSurfaceNavigation::Pathfinder::PushOpenNode(OpenSet, { NeighborTriangle, Records[NeighborTriangle].FScore });
+			}
+		}
+
+		for (int32 LinkIndex = 0; LinkIndex < NavData.SpecialLinks.Num(); ++LinkIndex)
+		{
+			const FMobileSurfaceNavSpecialLink& Link = NavData.SpecialLinks[LinkIndex];
+			if (!MobileSurfaceNavigation::Pathfinder::IsSpecialLinkAllowed(NavData, Link, Params))
+			{
+				continue;
+			}
+
+			int32 NeighborTriangle = INDEX_NONE;
+			if (Link.FromTriangleIndex == CurrentTriangle)
+			{
+				NeighborTriangle = Link.ToTriangleIndex;
+			}
+			else if (Link.bBidirectional && Link.ToTriangleIndex == CurrentTriangle)
+			{
+				NeighborTriangle = Link.FromTriangleIndex;
+			}
+
+			if (NeighborTriangle == INDEX_NONE || Records[NeighborTriangle].bClosed)
+			{
+				continue;
+			}
+
+			const double LinkCost = FMath::Max(0.0f, Link.Cost) * FMath::Max(0.001f, Link.CostMultiplier) * MobileSurfaceNavigation::Pathfinder::GetTriangleCostMultiplier(NavData, NeighborTriangle);
+			const double TentativeG = Records[CurrentTriangle].GScore + LinkCost;
+			if (TentativeG < Records[NeighborTriangle].GScore)
+			{
+				Records[NeighborTriangle].CameFrom.PreviousTriangle = CurrentTriangle;
+				Records[NeighborTriangle].CameFrom.PortalIndex = INDEX_NONE;
+				Records[NeighborTriangle].CameFrom.SpecialLinkIndex = LinkIndex;
 				Records[NeighborTriangle].GScore = TentativeG;
 				Records[NeighborTriangle].FScore = TentativeG + FVector::Distance(
 					NavData.Triangles[NeighborTriangle].Center,
@@ -527,27 +617,70 @@ bool FMobileSurfacePathfinder::FindPath(
 		}
 	}
 
-	if (Records[FallbackEndTriangle].CameFrom == INDEX_NONE)
+	if (Records[FallbackEndTriangle].CameFrom.PreviousTriangle == INDEX_NONE)
 	{
 		return false;
 	}
 
 	TArray<int32> ReversedTriangles;
-	for (int32 Cursor = FallbackEndTriangle; Cursor != INDEX_NONE; Cursor = Records[Cursor].CameFrom)
+	for (int32 Cursor = FallbackEndTriangle; Cursor != INDEX_NONE; Cursor = Records[Cursor].CameFrom.PreviousTriangle)
 	{
 		ReversedTriangles.Add(Cursor);
 	}
 	Algo::Reverse(ReversedTriangles);
 	OutPath.TriangleIndices = ReversedTriangles;
 
-	OutPath.RawWaypoints.Add(StartLocalPosition);
+	OutPath.RawWaypoints.Add(ResolvedStartLocalPosition);
+	OutPath.Waypoints.Reset();
+	int32 FunnelSegmentStartPathIndex = 0;
+	FVector FunnelSegmentStartPosition = ResolvedStartLocalPosition;
+
 	for (int32 PathIndex = 0; PathIndex + 1 < ReversedTriangles.Num(); ++PathIndex)
 	{
-		if (NavData.TriangleAdjacency.IsValidIndex(ReversedTriangles[PathIndex]))
+		const int32 CurrentTriangle = ReversedTriangles[PathIndex];
+		const int32 NextTriangle = ReversedTriangles[PathIndex + 1];
+		if (Records[NextTriangle].CameFrom.SpecialLinkIndex != INDEX_NONE && NavData.SpecialLinks.IsValidIndex(Records[NextTriangle].CameFrom.SpecialLinkIndex))
 		{
-			for (const FMobileSurfaceTriangleAdjacency& Adjacency : NavData.TriangleAdjacency[ReversedTriangles[PathIndex]].Neighbors)
+			const FMobileSurfaceNavSpecialLink& Link = NavData.SpecialLinks[Records[NextTriangle].CameFrom.SpecialLinkIndex];
+			const bool bForwardTraversal = Link.FromTriangleIndex == CurrentTriangle;
+			const FVector LinkEntryPosition = bForwardTraversal ? Link.FromLocalPosition : Link.ToLocalPosition;
+			const FVector LinkExitPosition = bForwardTraversal ? Link.ToLocalPosition : Link.FromLocalPosition;
+
+			TArray<int32> FunnelSegmentTriangles;
+			for (int32 SegmentIndex = FunnelSegmentStartPathIndex; SegmentIndex <= PathIndex; ++SegmentIndex)
 			{
-				if (Adjacency.NeighborTriangleIndex == ReversedTriangles[PathIndex + 1] && NavData.Portals.IsValidIndex(Adjacency.PortalIndex))
+				FunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
+			}
+			MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
+				OutPath.Waypoints,
+				MobileSurfaceNavigation::Pathfinder::RunFunnel(
+					NavData,
+					FunnelSegmentTriangles,
+					FunnelSegmentStartPosition,
+					LinkEntryPosition));
+			MobileSurfaceNavigation::Pathfinder::AddWaypointIfNeeded(OutPath.Waypoints, LinkExitPosition);
+
+			if (Link.FromTriangleIndex == CurrentTriangle)
+			{
+				OutPath.RawWaypoints.Add(Link.FromLocalPosition);
+				OutPath.RawWaypoints.Add(Link.ToLocalPosition);
+			}
+			else
+			{
+				OutPath.RawWaypoints.Add(Link.ToLocalPosition);
+				OutPath.RawWaypoints.Add(Link.FromLocalPosition);
+			}
+
+			FunnelSegmentStartPathIndex = PathIndex + 1;
+			FunnelSegmentStartPosition = LinkExitPosition;
+			continue;
+		}
+
+		if (NavData.TriangleAdjacency.IsValidIndex(CurrentTriangle))
+		{
+			for (const FMobileSurfaceTriangleAdjacency& Adjacency : NavData.TriangleAdjacency[CurrentTriangle].Neighbors)
+			{
+				if (Adjacency.NeighborTriangleIndex == NextTriangle && NavData.Portals.IsValidIndex(Adjacency.PortalIndex))
 				{
 					OutPath.RawWaypoints.Add(NavData.Portals[Adjacency.PortalIndex].Center);
 					break;
@@ -555,8 +688,21 @@ bool FMobileSurfacePathfinder::FindPath(
 			}
 		}
 	}
-	OutPath.RawWaypoints.Add(EndLocalPosition);
-	OutPath.Waypoints = MobileSurfaceNavigation::Pathfinder::RunFunnel(NavData, OutPath.TriangleIndices, StartLocalPosition, EndLocalPosition);
+	OutPath.RawWaypoints.Add(ResolvedEndLocalPosition);
+
+	TArray<int32> FinalFunnelSegmentTriangles;
+	for (int32 SegmentIndex = FunnelSegmentStartPathIndex; SegmentIndex < ReversedTriangles.Num(); ++SegmentIndex)
+	{
+		FinalFunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
+	}
+	MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
+		OutPath.Waypoints,
+		MobileSurfaceNavigation::Pathfinder::RunFunnel(
+			NavData,
+			FinalFunnelSegmentTriangles,
+			FunnelSegmentStartPosition,
+			ResolvedEndLocalPosition));
+
 	if (OutPath.Waypoints.Num() < 2)
 	{
 		OutPath.Waypoints = OutPath.RawWaypoints;

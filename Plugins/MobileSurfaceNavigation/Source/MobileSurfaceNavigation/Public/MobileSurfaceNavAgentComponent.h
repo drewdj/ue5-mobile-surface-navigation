@@ -47,7 +47,7 @@ private:
 	void ClearPendingPathRequest();
 	void ClearCurrentPath();
 	void HandleMoveCompleted();
-	bool RepathToActiveTarget();
+	bool RepathToActiveTarget(bool bPreserveCurrentPathUntilSuccess = false);
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMobileSurfaceNavComponent> NavigationComponent = nullptr;
@@ -114,6 +114,9 @@ private:
 
 	UPROPERTY(Transient)
 	int32 ObservedRuntimeStateRevision = 0;
+
+	UPROPERTY(Transient)
+	bool bWaitingForNavigationChange = false;
 
 	UPROPERTY(Transient)
 	int32 LastRequestedRuntimeStateRevision = INDEX_NONE;
