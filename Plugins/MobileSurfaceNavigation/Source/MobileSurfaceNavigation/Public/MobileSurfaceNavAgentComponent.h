@@ -41,6 +41,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	UMobileSurfaceNavComponent* GetNavigationComponent() const;
 
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	void SetRandomPathDelay(float InRandomPathDelay);
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -65,6 +68,8 @@ private:
 	void CompleteCurrentSpecialLinkSegment();
 	bool IsInBlockingSpecialLinkTraversal() const;
 	bool ConsumeDeferredMoveRequestFromCurrentLocation();
+	bool CacheCurrentNavigationLocalPosition();
+	bool SyncOwnerToCachedNavigationLocalPosition() const;
 	bool IsBoardedOnActiveElevator() const;
 	void QueueDeferredMoveRequest(const FVector& TargetLocalPosition);
 	void ConsumeDeferredMoveRequest();
@@ -82,10 +87,16 @@ private:
 	float AcceptanceRadius = 10.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float PositionSnapTolerance = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
 	float RepathDelay = 0.35f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	bool bRequestRandomPathOnBeginPlay = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float RandomPathDelay = 0.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	bool bUseQueuedPathRequests = true;
@@ -179,6 +190,15 @@ private:
 
 	UPROPERTY(Transient)
 	int32 ActiveSpecialLinkRouteTargetIndex = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	TArray<FVector> ActiveSpecialLinkRouteLocalLocations;
+
+	UPROPERTY(Transient)
+	FVector CachedNavigationLocalPosition = FVector::ZeroVector;
+
+	UPROPERTY(Transient)
+	bool bHasCachedNavigationLocalPosition = false;
 
 	UPROPERTY(Transient)
 	bool bHasDeferredMoveRequest = false;

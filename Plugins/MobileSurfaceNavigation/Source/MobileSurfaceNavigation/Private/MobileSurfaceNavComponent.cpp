@@ -1,6 +1,7 @@
 #include "MobileSurfaceNavComponent.h"
 
 #include "MobileSurfaceNavAgent.h"
+#include "MobileSurfaceNavAgentComponent.h"
 #include "MobileSurfaceNavSubsystem.h"
 #include "MobileSurfaceNavElevator.h"
 #include "MobileSurfaceNavigationBuilder.h"
@@ -1032,6 +1033,10 @@ void UMobileSurfaceNavComponent::SpawnDebugAgents()
 		}
 
 		Agent->InitializeAgent(this, DebugAgentRadius, DebugAgentMoveSpeed, DebugAgentRandomSeed + AgentIndex * 31);
+		if (UMobileSurfaceNavAgentComponent* AgentComponent = Agent->GetNavigationAgentComponent())
+		{
+			AgentComponent->SetRandomPathDelay(DebugAgentRandomPathDelay);
+		}
 		SpawnedDebugAgents.Add(Agent);
 	}
 }

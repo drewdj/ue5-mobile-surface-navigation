@@ -310,6 +310,9 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug Agents", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
 	float DebugAgentMoveSpeed = 150.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug Agents", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float DebugAgentRandomPathDelay = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug Agents", meta = (AllowPrivateAccess = "true", ClampMin = "0"))
 	int32 DebugAgentRandomSeed = 777;
 

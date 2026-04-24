@@ -51,8 +51,26 @@ private:
 	UPROPERTY(EditAnywhere, Category = "Moving Platform Test")
 	bool bKeepInitialZ = true;
 
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement")
+	bool bMoveAlongX = true;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement")
+	bool bMoveAlongY = true;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement")
+	bool bMoveAlongZ = false;
+
 	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement", meta = (ClampMin = "0.0"))
 	float MoveRadius = 600.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement", meta = (ClampMin = "0.0"))
+	float MaxMoveOffsetX = 600.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement", meta = (ClampMin = "0.0"))
+	float MaxMoveOffsetY = 600.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement", meta = (ClampMin = "0.0"))
+	float MaxMoveOffsetZ = 150.0f;
 
 	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Movement", meta = (ClampMin = "0.0"))
 	float MoveSpeed = 150.0f;
@@ -62,6 +80,15 @@ private:
 
 	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Rotation", meta = (ClampMin = "0.0"))
 	float RotationSpeedDegrees = 45.0f;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Rotation")
+	bool bRotatePitch = false;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Rotation")
+	bool bRotateYaw = true;
+
+	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Rotation")
+	bool bRotateRoll = false;
 
 	UPROPERTY(EditAnywhere, Category = "Moving Platform Test|Rotation", meta = (ClampMin = "0.0", ClampMax = "180.0"))
 	float MaxRandomPitch = 10.0f;

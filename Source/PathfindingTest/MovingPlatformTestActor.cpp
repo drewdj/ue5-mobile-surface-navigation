@@ -77,13 +77,21 @@ void AMovingPlatformTestActor::PickNewTargets()
 
 FVector AMovingPlatformTestActor::BuildRandomTargetLocation()
 {
-	const FVector RandomDirection = RandomStream.VRand();
-	const float RandomDistance = RandomStream.FRandRange(0.0f, MoveRadius);
+	const float EffectiveMaxOffsetX = MaxMoveOffsetX > 0.0f ? MaxMoveOffsetX : MoveRadius;
+	const float EffectiveMaxOffsetY = MaxMoveOffsetY > 0.0f ? MaxMoveOffsetY : MoveRadius;
+	const float EffectiveMaxOffsetZ = MaxMoveOffsetZ > 0.0f ? MaxMoveOffsetZ : MoveRadius;
 
-	FVector TargetLocation = InitialLocation + (RandomDirection * RandomDistance);
-	if (bKeepInitialZ)
+	FVector TargetLocation = InitialLocation;
+	TargetLocation.X += bMoveAlongX ? RandomStream.FRandRange(-EffectiveMaxOffsetX, EffectiveMaxOffsetX) : 0.0f;
+	TargetLocation.Y += bMoveAlongY ? RandomStream.FRandRange(-EffectiveMaxOffsetY, EffectiveMaxOffsetY) : 0.0f;
+
+	if (bKeepInitialZ || !bMoveAlongZ)
 	{
 		TargetLocation.Z = InitialLocation.Z;
+	}
+	else
+	{
+		TargetLocation.Z += RandomStream.FRandRange(-EffectiveMaxOffsetZ, EffectiveMaxOffsetZ);
 	}
 
 	return TargetLocation;
@@ -92,9 +100,9 @@ FVector AMovingPlatformTestActor::BuildRandomTargetLocation()
 FRotator AMovingPlatformTestActor::BuildRandomTargetRotation()
 {
 	return FRotator(
-		InitialRotation.Pitch + RandomStream.FRandRange(-MaxRandomPitch, MaxRandomPitch),
-		InitialRotation.Yaw + RandomStream.FRandRange(-MaxRandomYawOffset, MaxRandomYawOffset),
-		InitialRotation.Roll + RandomStream.FRandRange(-MaxRandomRoll, MaxRandomRoll));
+		bRotatePitch ? InitialRotation.Pitch + RandomStream.FRandRange(-MaxRandomPitch, MaxRandomPitch) : InitialRotation.Pitch,
+		bRotateYaw ? InitialRotation.Yaw + RandomStream.FRandRange(-MaxRandomYawOffset, MaxRandomYawOffset) : InitialRotation.Yaw,
+		bRotateRoll ? InitialRotation.Roll + RandomStream.FRandRange(-MaxRandomRoll, MaxRandomRoll) : InitialRotation.Roll);
 }
 
 void AMovingPlatformTestActor::ScheduleNextRetarget()
