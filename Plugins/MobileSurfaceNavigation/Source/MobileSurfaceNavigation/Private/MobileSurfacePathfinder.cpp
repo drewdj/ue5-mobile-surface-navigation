@@ -23,6 +23,8 @@ namespace MobileSurfaceNavigation::Pathfinder
 		int32 PreviousTriangle = INDEX_NONE;
 		int32 PortalIndex = INDEX_NONE;
 		int32 SpecialLinkIndex = INDEX_NONE;
+		int32 SpecialLinkEntryNodeIndex = INDEX_NONE;
+		int32 SpecialLinkExitNodeIndex = INDEX_NONE;
 	};
 
 	static bool HasHigherPriority(const FOpenNode& A, const FOpenNode& B)
@@ -188,10 +190,93 @@ namespace MobileSurfaceNavigation::Pathfinder
 		const FMobileSurfaceNavSpecialLink& Link,
 		const FMobileSurfacePathQueryParams& Params)
 	{
-		return Link.bEnabled &&
-			IsTagAllowed(Link.LinkTag, Params.AllowedSpecialLinkTags, Params.ExcludedSpecialLinkTags) &&
-			IsTriangleAllowed(NavData, Link.FromTriangleIndex, Params) &&
-			IsTriangleAllowed(NavData, Link.ToTriangleIndex, Params);
+		if (!Link.bEnabled ||
+			!IsTagAllowed(Link.LinkTag, Params.AllowedSpecialLinkTags, Params.ExcludedSpecialLinkTags) ||
+			Link.GetNodeCount() < 2)
+		{
+			return false;
+		}
+
+		bool bHasAllowedNode = false;
+		for (int32 NodeIndex = 0; NodeIndex < Link.GetNodeCount(); ++NodeIndex)
+		{
+			const int32 TriangleIndex = Link.GetNodeTriangleIndex(NodeIndex);
+			if (TriangleIndex == INDEX_NONE)
+			{
+				continue;
+			}
+
+			if (IsTriangleAllowed(NavData, TriangleIndex, Params))
+			{
+				bHasAllowedNode = true;
+			}
+		}
+
+		return bHasAllowedNode;
+	}
+
+	static double GetSpecialLinkTraversalFactor(const FMobileSurfaceNavSpecialLink& Link, const int32 EntryNodeIndex, const int32 ExitNodeIndex)
+	{
+		if (EntryNodeIndex == INDEX_NONE || ExitNodeIndex == INDEX_NONE || EntryNodeIndex == ExitNodeIndex)
+		{
+			return 1.0;
+		}
+
+		if (Link.LinkType == EMobileSurfaceNavSpecialLinkType::Jump)
+		{
+			return 1.0;
+		}
+
+		return FMath::Max(1, FMath::Abs(ExitNodeIndex - EntryNodeIndex));
+	}
+
+	static double GetSpecialLinkTraversalCost(
+		const FMobileSurfaceNavData& NavData,
+		const FMobileSurfaceNavSpecialLink& Link,
+		const int32 EntryNodeIndex,
+		const int32 ExitNodeIndex,
+		const int32 NeighborTriangle)
+	{
+		const double TraversalFactor = GetSpecialLinkTraversalFactor(Link, EntryNodeIndex, ExitNodeIndex);
+		const FMobileSurfaceNavRegionRuntimeState* RegionState = NavData.Triangles.IsValidIndex(NeighborTriangle)
+			? GetRegionState(NavData, NavData.Triangles[NeighborTriangle].RegionId)
+			: nullptr;
+		const double TriangleCostMultiplier = RegionState ? FMath::Max(0.001f, RegionState->CostMultiplier) : 1.0;
+		return FMath::Max(0.0f, Link.Cost) *
+			TraversalFactor *
+			FMath::Max(0.001f, Link.CostMultiplier) *
+			TriangleCostMultiplier;
+	}
+
+	static TArray<int32> BuildTraversalNodeRoute(
+		const FMobileSurfaceNavSpecialLink& Link,
+		const int32 EntryNodeIndex,
+		const int32 ExitNodeIndex)
+	{
+		TArray<int32> Route;
+		if (EntryNodeIndex == INDEX_NONE || ExitNodeIndex == INDEX_NONE)
+		{
+			return Route;
+		}
+
+		if (Link.LinkType == EMobileSurfaceNavSpecialLinkType::Ladder ||
+			Link.TraversalMode == EMobileSurfaceNavLinkTraversalMode::Sequential)
+		{
+			const int32 Step = ExitNodeIndex >= EntryNodeIndex ? 1 : -1;
+			for (int32 NodeIndex = EntryNodeIndex; ; NodeIndex += Step)
+			{
+				Route.Add(NodeIndex);
+				if (NodeIndex == ExitNodeIndex)
+				{
+					break;
+				}
+			}
+			return Route;
+		}
+
+		Route.Add(EntryNodeIndex);
+		Route.Add(ExitNodeIndex);
+		return Route;
 	}
 
 	static double GetTriangleCostMultiplier(const FMobileSurfaceNavData& NavData, const int32 TriangleIndex)
@@ -257,6 +342,48 @@ namespace MobileSurfaceNavigation::Pathfinder
 		{
 			AddWaypointIfNeeded(InOutWaypoints, Waypoint);
 		}
+	}
+
+	static EMobileSurfaceNavPathSegmentType ToPathSegmentType(const EMobileSurfaceNavSpecialLinkType LinkType)
+	{
+		switch (LinkType)
+		{
+		case EMobileSurfaceNavSpecialLinkType::Ladder:
+			return EMobileSurfaceNavPathSegmentType::Ladder;
+		case EMobileSurfaceNavSpecialLinkType::Elevator:
+			return EMobileSurfaceNavPathSegmentType::Elevator;
+		case EMobileSurfaceNavSpecialLinkType::Jump:
+			return EMobileSurfaceNavPathSegmentType::Jump;
+		default:
+			return EMobileSurfaceNavPathSegmentType::Walk;
+		}
+	}
+
+	static void AddPathSegment(
+		FMobileSurfaceNavPath& Path,
+		const EMobileSurfaceNavPathSegmentType SegmentType,
+		const int32 StartWaypointIndex,
+		const int32 EndWaypointIndex,
+		const int32 SpecialLinkIndex = INDEX_NONE,
+		const EMobileSurfaceNavSpecialLinkType SpecialLinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		const int32 SpecialLinkEntryNodeIndex = INDEX_NONE,
+		const int32 SpecialLinkExitNodeIndex = INDEX_NONE,
+		const TArray<int32>& SpecialLinkTraversalNodeIndices = TArray<int32>())
+	{
+		if (StartWaypointIndex == INDEX_NONE || EndWaypointIndex == INDEX_NONE || EndWaypointIndex <= StartWaypointIndex)
+		{
+			return;
+		}
+
+		FMobileSurfaceNavPathSegment& Segment = Path.Segments.AddDefaulted_GetRef();
+		Segment.SegmentType = SegmentType;
+		Segment.StartWaypointIndex = StartWaypointIndex;
+		Segment.EndWaypointIndex = EndWaypointIndex;
+		Segment.SpecialLinkIndex = SpecialLinkIndex;
+		Segment.SpecialLinkType = SpecialLinkType;
+		Segment.SpecialLinkEntryNodeIndex = SpecialLinkEntryNodeIndex;
+		Segment.SpecialLinkExitNodeIndex = SpecialLinkExitNodeIndex;
+		Segment.SpecialLinkTraversalNodeIndices = SpecialLinkTraversalNodeIndices;
 	}
 
 	static void BuildPathBasis(
@@ -509,6 +636,11 @@ bool FMobileSurfacePathfinder::FindPath(
 		OutPath.TriangleIndices = { FallbackStartTriangle };
 		OutPath.RawWaypoints = { ResolvedStartLocalPosition, ResolvedEndLocalPosition };
 		OutPath.Waypoints = OutPath.RawWaypoints;
+		MobileSurfaceNavigation::Pathfinder::AddPathSegment(
+			OutPath,
+			EMobileSurfaceNavPathSegmentType::Walk,
+			0,
+			1);
 		OutPath.EstimatedLength = FVector::Distance(ResolvedStartLocalPosition, ResolvedEndLocalPosition);
 		return true;
 	}
@@ -586,33 +718,57 @@ bool FMobileSurfacePathfinder::FindPath(
 				continue;
 			}
 
-			int32 NeighborTriangle = INDEX_NONE;
-			if (Link.FromTriangleIndex == CurrentTriangle)
+			for (int32 EntryNodeIndex = 0; EntryNodeIndex < Link.GetNodeCount(); ++EntryNodeIndex)
 			{
-				NeighborTriangle = Link.ToTriangleIndex;
-			}
-			else if (Link.bBidirectional && Link.ToTriangleIndex == CurrentTriangle)
-			{
-				NeighborTriangle = Link.FromTriangleIndex;
-			}
+				if (Link.GetNodeTriangleIndex(EntryNodeIndex) != CurrentTriangle)
+				{
+					continue;
+				}
 
-			if (NeighborTriangle == INDEX_NONE || Records[NeighborTriangle].bClosed)
-			{
-				continue;
-			}
+				for (int32 ExitNodeIndex = 0; ExitNodeIndex < Link.GetNodeCount(); ++ExitNodeIndex)
+				{
+					if (ExitNodeIndex == EntryNodeIndex)
+					{
+						continue;
+					}
 
-			const double LinkCost = FMath::Max(0.0f, Link.Cost) * FMath::Max(0.001f, Link.CostMultiplier) * MobileSurfaceNavigation::Pathfinder::GetTriangleCostMultiplier(NavData, NeighborTriangle);
-			const double TentativeG = Records[CurrentTriangle].GScore + LinkCost;
-			if (TentativeG < Records[NeighborTriangle].GScore)
-			{
-				Records[NeighborTriangle].CameFrom.PreviousTriangle = CurrentTriangle;
-				Records[NeighborTriangle].CameFrom.PortalIndex = INDEX_NONE;
-				Records[NeighborTriangle].CameFrom.SpecialLinkIndex = LinkIndex;
-				Records[NeighborTriangle].GScore = TentativeG;
-				Records[NeighborTriangle].FScore = TentativeG + FVector::Distance(
-					NavData.Triangles[NeighborTriangle].Center,
-					NavData.Triangles[FallbackEndTriangle].Center);
-				MobileSurfaceNavigation::Pathfinder::PushOpenNode(OpenSet, { NeighborTriangle, Records[NeighborTriangle].FScore });
+					if (!Link.bBidirectional && ExitNodeIndex < EntryNodeIndex)
+					{
+						continue;
+					}
+
+					const int32 NeighborTriangle = Link.GetNodeTriangleIndex(ExitNodeIndex);
+					if (NeighborTriangle == INDEX_NONE || Records[NeighborTriangle].bClosed)
+					{
+						continue;
+					}
+
+					if (!MobileSurfaceNavigation::Pathfinder::IsTriangleAllowed(NavData, NeighborTriangle, Params))
+					{
+						continue;
+					}
+
+					const double LinkCost = MobileSurfaceNavigation::Pathfinder::GetSpecialLinkTraversalCost(
+						NavData,
+						Link,
+						EntryNodeIndex,
+						ExitNodeIndex,
+						NeighborTriangle);
+					const double TentativeG = Records[CurrentTriangle].GScore + LinkCost;
+					if (TentativeG < Records[NeighborTriangle].GScore)
+					{
+						Records[NeighborTriangle].CameFrom.PreviousTriangle = CurrentTriangle;
+						Records[NeighborTriangle].CameFrom.PortalIndex = INDEX_NONE;
+						Records[NeighborTriangle].CameFrom.SpecialLinkIndex = LinkIndex;
+						Records[NeighborTriangle].CameFrom.SpecialLinkEntryNodeIndex = EntryNodeIndex;
+						Records[NeighborTriangle].CameFrom.SpecialLinkExitNodeIndex = ExitNodeIndex;
+						Records[NeighborTriangle].GScore = TentativeG;
+						Records[NeighborTriangle].FScore = TentativeG + FVector::Distance(
+							NavData.Triangles[NeighborTriangle].Center,
+							NavData.Triangles[FallbackEndTriangle].Center);
+						MobileSurfaceNavigation::Pathfinder::PushOpenNode(OpenSet, { NeighborTriangle, Records[NeighborTriangle].FScore });
+					}
+				}
 			}
 		}
 	}
@@ -642,15 +798,17 @@ bool FMobileSurfacePathfinder::FindPath(
 		if (Records[NextTriangle].CameFrom.SpecialLinkIndex != INDEX_NONE && NavData.SpecialLinks.IsValidIndex(Records[NextTriangle].CameFrom.SpecialLinkIndex))
 		{
 			const FMobileSurfaceNavSpecialLink& Link = NavData.SpecialLinks[Records[NextTriangle].CameFrom.SpecialLinkIndex];
-			const bool bForwardTraversal = Link.FromTriangleIndex == CurrentTriangle;
-			const FVector LinkEntryPosition = bForwardTraversal ? Link.FromLocalPosition : Link.ToLocalPosition;
-			const FVector LinkExitPosition = bForwardTraversal ? Link.ToLocalPosition : Link.FromLocalPosition;
+			const int32 EntryNodeIndex = Records[NextTriangle].CameFrom.SpecialLinkEntryNodeIndex;
+			const int32 ExitNodeIndex = Records[NextTriangle].CameFrom.SpecialLinkExitNodeIndex;
+			const FVector LinkEntryPosition = Link.GetNodeLocalPosition(EntryNodeIndex);
+			const FVector LinkExitPosition = Link.GetNodeLocalPosition(ExitNodeIndex);
 
 			TArray<int32> FunnelSegmentTriangles;
 			for (int32 SegmentIndex = FunnelSegmentStartPathIndex; SegmentIndex <= PathIndex; ++SegmentIndex)
 			{
 				FunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
 			}
+			const int32 WalkSegmentStartWaypointIndex = OutPath.Waypoints.IsEmpty() ? 0 : (OutPath.Waypoints.Num() - 1);
 			MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
 				OutPath.Waypoints,
 				MobileSurfaceNavigation::Pathfinder::RunFunnel(
@@ -658,18 +816,26 @@ bool FMobileSurfacePathfinder::FindPath(
 					FunnelSegmentTriangles,
 					FunnelSegmentStartPosition,
 					LinkEntryPosition));
+			MobileSurfaceNavigation::Pathfinder::AddPathSegment(
+				OutPath,
+				EMobileSurfaceNavPathSegmentType::Walk,
+				WalkSegmentStartWaypointIndex,
+				OutPath.Waypoints.Num() - 1);
+			const int32 SpecialSegmentStartWaypointIndex = OutPath.Waypoints.Num() - 1;
 			MobileSurfaceNavigation::Pathfinder::AddWaypointIfNeeded(OutPath.Waypoints, LinkExitPosition);
+			MobileSurfaceNavigation::Pathfinder::AddPathSegment(
+				OutPath,
+				MobileSurfaceNavigation::Pathfinder::ToPathSegmentType(Link.LinkType),
+				SpecialSegmentStartWaypointIndex,
+				OutPath.Waypoints.Num() - 1,
+				Records[NextTriangle].CameFrom.SpecialLinkIndex,
+				Link.LinkType,
+				EntryNodeIndex,
+				ExitNodeIndex,
+				MobileSurfaceNavigation::Pathfinder::BuildTraversalNodeRoute(Link, EntryNodeIndex, ExitNodeIndex));
 
-			if (Link.FromTriangleIndex == CurrentTriangle)
-			{
-				OutPath.RawWaypoints.Add(Link.FromLocalPosition);
-				OutPath.RawWaypoints.Add(Link.ToLocalPosition);
-			}
-			else
-			{
-				OutPath.RawWaypoints.Add(Link.ToLocalPosition);
-				OutPath.RawWaypoints.Add(Link.FromLocalPosition);
-			}
+			OutPath.RawWaypoints.Add(LinkEntryPosition);
+			OutPath.RawWaypoints.Add(LinkExitPosition);
 
 			FunnelSegmentStartPathIndex = PathIndex + 1;
 			FunnelSegmentStartPosition = LinkExitPosition;
@@ -695,6 +861,7 @@ bool FMobileSurfacePathfinder::FindPath(
 	{
 		FinalFunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
 	}
+	const int32 FinalWalkSegmentStartWaypointIndex = OutPath.Waypoints.IsEmpty() ? 0 : (OutPath.Waypoints.Num() - 1);
 	MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
 		OutPath.Waypoints,
 		MobileSurfaceNavigation::Pathfinder::RunFunnel(
@@ -702,6 +869,11 @@ bool FMobileSurfacePathfinder::FindPath(
 			FinalFunnelSegmentTriangles,
 			FunnelSegmentStartPosition,
 			ResolvedEndLocalPosition));
+	MobileSurfaceNavigation::Pathfinder::AddPathSegment(
+		OutPath,
+		EMobileSurfaceNavPathSegmentType::Walk,
+		FinalWalkSegmentStartWaypointIndex,
+		OutPath.Waypoints.Num() - 1);
 
 	if (OutPath.Waypoints.Num() < 2)
 	{

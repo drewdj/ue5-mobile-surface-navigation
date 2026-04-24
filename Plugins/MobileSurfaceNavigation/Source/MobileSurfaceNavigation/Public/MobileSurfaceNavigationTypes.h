@@ -3,6 +3,8 @@
 #include "CoreMinimal.h"
 #include "MobileSurfaceNavigationTypes.generated.h"
 
+class AMobileSurfaceNavElevator;
+
 UENUM(BlueprintType)
 enum class EMobileSurfaceBoundaryKind : uint8
 {
@@ -14,11 +16,35 @@ enum class EMobileSurfaceBoundaryKind : uint8
 UENUM(BlueprintType)
 enum class EMobileSurfaceNavSpecialLinkType : uint8
 {
-	Generic = 0,
+	Ladder = 0,
 	Elevator = 1,
-	Ladder = 2,
-	Jump = 3,
-	Teleporter = 4
+	Jump = 2
+};
+
+UENUM(BlueprintType)
+enum class EMobileSurfaceNavLinkTraversalMode : uint8
+{
+	Direct = 0,
+	Sequential = 1
+};
+
+UENUM(BlueprintType)
+enum class EMobileSurfaceNavPathSegmentType : uint8
+{
+	Walk = 0,
+	Ladder = 1,
+	Elevator = 2,
+	Jump = 3
+};
+
+UENUM(BlueprintType)
+enum class EMobileSurfaceNavAgentState : uint8
+{
+	Idle = 0,
+	Moving = 1,
+	WaitingForPath = 2,
+	UsingSpecialLink = 3,
+	WaitingForElevator = 4
 };
 
 USTRUCT(BlueprintType)
@@ -238,6 +264,21 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfacePathQueryParams
 };
 
 USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLinkNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	FVector LocalPosition = FVector::ZeroVector;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 TriangleIndex = INDEX_NONE;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (ClampMin = "-1"))
+	int32 StopIndex = INDEX_NONE;
+};
+
+USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
 {
 	GENERATED_BODY()
@@ -246,7 +287,7 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
 	FName LinkId = NAME_None;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
-	EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic;
+	EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	bool bEnabled = true;
@@ -264,16 +305,38 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavSpecialLink
 	float CostMultiplier = 1.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
-	FVector FromLocalPosition = FVector::ZeroVector;
+	EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
-	FVector ToLocalPosition = FVector::ZeroVector;
+	TArray<FMobileSurfaceNavSpecialLinkNode> Nodes;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
-	int32 FromTriangleIndex = INDEX_NONE;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
+	TObjectPtr<AMobileSurfaceNavElevator> ElevatorActor = nullptr;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
-	int32 ToTriangleIndex = INDEX_NONE;
+	int32 GetNodeCount() const
+	{
+		return Nodes.Num();
+	}
+
+	FVector GetNodeLocalPosition(const int32 NodeIndex) const
+	{
+		return Nodes.IsValidIndex(NodeIndex) ? Nodes[NodeIndex].LocalPosition : FVector::ZeroVector;
+	}
+
+	int32 GetNodeTriangleIndex(const int32 NodeIndex) const
+	{
+		return Nodes.IsValidIndex(NodeIndex) ? Nodes[NodeIndex].TriangleIndex : INDEX_NONE;
+	}
+
+	int32 GetNodeStopIndex(const int32 NodeIndex) const
+	{
+		if (Nodes.IsValidIndex(NodeIndex))
+		{
+			return Nodes[NodeIndex].StopIndex;
+		}
+
+		return NodeIndex;
+	}
 };
 
 USTRUCT(BlueprintType)
@@ -347,6 +410,36 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 };
 
 USTRUCT(BlueprintType)
+struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPathSegment
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	EMobileSurfaceNavPathSegmentType SegmentType = EMobileSurfaceNavPathSegmentType::Walk;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 StartWaypointIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 EndWaypointIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 SpecialLinkIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	EMobileSurfaceNavSpecialLinkType SpecialLinkType = EMobileSurfaceNavSpecialLinkType::Ladder;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 SpecialLinkEntryNodeIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	int32 SpecialLinkExitNodeIndex = INDEX_NONE;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<int32> SpecialLinkTraversalNodeIndices;
+};
+
+USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPath
 {
 	GENERATED_BODY()
@@ -368,6 +461,9 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavPath
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FVector> Waypoints;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
+	TArray<FMobileSurfaceNavPathSegment> Segments;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	float EstimatedLength = 0.0f;

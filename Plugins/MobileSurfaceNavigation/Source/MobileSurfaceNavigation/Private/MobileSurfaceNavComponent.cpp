@@ -2,6 +2,7 @@
 
 #include "MobileSurfaceNavAgent.h"
 #include "MobileSurfaceNavSubsystem.h"
+#include "MobileSurfaceNavElevator.h"
 #include "MobileSurfaceNavigationBuilder.h"
 #include "MobileSurfaceNavigationDebug.h"
 #include "MobileSurfaceNavigationQuery.h"
@@ -275,37 +276,71 @@ void UMobileSurfaceNavComponent::ResetAllRuntimeState()
 	MarkRuntimeStateDirty();
 }
 
+static void NormalizeSpecialLinkNodesForType(
+	TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes,
+	const EMobileSurfaceNavSpecialLinkType LinkType)
+{
+	for (int32 NodeIndex = 0; NodeIndex < Nodes.Num(); ++NodeIndex)
+	{
+		if (LinkType == EMobileSurfaceNavSpecialLinkType::Elevator)
+		{
+			if (Nodes[NodeIndex].StopIndex == INDEX_NONE)
+			{
+				Nodes[NodeIndex].StopIndex = NodeIndex;
+			}
+		}
+		else
+		{
+			Nodes[NodeIndex].StopIndex = INDEX_NONE;
+		}
+	}
+}
+
+static TArray<FVector> BuildSpecialLinkWorldNodeLocations(const USceneComponent* SpaceComponent, const FMobileSurfaceNavSpecialLink& Link)
+{
+	TArray<FVector> WorldNodeLocations;
+	if (!SpaceComponent)
+	{
+		return WorldNodeLocations;
+	}
+
+	const FTransform LocalToWorld = SpaceComponent->GetComponentTransform();
+	WorldNodeLocations.Reserve(Link.Nodes.Num());
+	for (const FMobileSurfaceNavSpecialLinkNode& Node : Link.Nodes)
+	{
+		WorldNodeLocations.Add(LocalToWorld.TransformPosition(Node.LocalPosition));
+	}
+
+	return WorldNodeLocations;
+}
+
 int32 UMobileSurfaceNavComponent::AddSpecialLinkFromLocalPoints(
 	const FName LinkId,
 	const FVector& FromLocalPosition,
 	const FVector& ToLocalPosition,
 	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const EMobileSurfaceNavLinkTraversalMode TraversalMode,
 	const bool bBidirectional,
 	const float Cost,
 	const FName LinkTag)
 {
-	if (!NavigationData.bIsValid)
-	{
-		return INDEX_NONE;
-	}
+	TArray<FMobileSurfaceNavSpecialLinkNode> Nodes;
+	FMobileSurfaceNavSpecialLinkNode& FromNode = Nodes.AddDefaulted_GetRef();
+	FromNode.LocalPosition = FromLocalPosition;
+	FromNode.StopIndex = LinkType == EMobileSurfaceNavSpecialLinkType::Elevator ? 0 : INDEX_NONE;
 
-	FMobileSurfaceNavSpecialLink Link;
-	Link.LinkId = LinkId;
-	Link.LinkType = LinkType;
-	Link.bBidirectional = bBidirectional;
-	Link.Cost = FMath::Max(0.0f, Cost);
-	Link.LinkTag = LinkTag;
-	Link.FromLocalPosition = FromLocalPosition;
-	Link.ToLocalPosition = ToLocalPosition;
+	FMobileSurfaceNavSpecialLinkNode& ToNode = Nodes.AddDefaulted_GetRef();
+	ToNode.LocalPosition = ToLocalPosition;
+	ToNode.StopIndex = LinkType == EMobileSurfaceNavSpecialLinkType::Elevator ? 1 : INDEX_NONE;
 
-	if (!ResolveSpecialLinkTriangles(Link))
-	{
-		return INDEX_NONE;
-	}
-
-	const int32 LinkIndex = NavigationData.SpecialLinks.Add(Link);
-	MarkRuntimeStateDirty();
-	return LinkIndex;
+	return AddSpecialLinkFromLocalNodes(
+		LinkId,
+		Nodes,
+		LinkType,
+		TraversalMode,
+		bBidirectional,
+		Cost,
+		LinkTag);
 }
 
 int32 UMobileSurfaceNavComponent::AddSpecialLinkFromWorldPoints(
@@ -313,6 +348,70 @@ int32 UMobileSurfaceNavComponent::AddSpecialLinkFromWorldPoints(
 	const FVector& FromWorldPosition,
 	const FVector& ToWorldPosition,
 	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const EMobileSurfaceNavLinkTraversalMode TraversalMode,
+	const bool bBidirectional,
+	const float Cost,
+	const FName LinkTag)
+{
+	TArray<FMobileSurfaceNavSpecialLinkNode> Nodes;
+	FMobileSurfaceNavSpecialLinkNode& FromNode = Nodes.AddDefaulted_GetRef();
+	FromNode.LocalPosition = FromWorldPosition;
+	FromNode.StopIndex = LinkType == EMobileSurfaceNavSpecialLinkType::Elevator ? 0 : INDEX_NONE;
+
+	FMobileSurfaceNavSpecialLinkNode& ToNode = Nodes.AddDefaulted_GetRef();
+	ToNode.LocalPosition = ToWorldPosition;
+	ToNode.StopIndex = LinkType == EMobileSurfaceNavSpecialLinkType::Elevator ? 1 : INDEX_NONE;
+
+	return AddSpecialLinkFromWorldNodes(
+		LinkId,
+		Nodes,
+		LinkType,
+		TraversalMode,
+		bBidirectional,
+		Cost,
+		LinkTag);
+}
+
+int32 UMobileSurfaceNavComponent::AddSpecialLinkFromLocalNodes(
+	const FName LinkId,
+	const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes,
+	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const EMobileSurfaceNavLinkTraversalMode TraversalMode,
+	const bool bBidirectional,
+	const float Cost,
+	const FName LinkTag)
+{
+	if (!NavigationData.bIsValid || Nodes.Num() < 2)
+	{
+		return INDEX_NONE;
+	}
+
+	FMobileSurfaceNavSpecialLink Link;
+	Link.LinkId = LinkId;
+	Link.LinkType = LinkType;
+	Link.TraversalMode = TraversalMode;
+	Link.bBidirectional = bBidirectional;
+	Link.Cost = FMath::Max(0.0f, Cost);
+	Link.LinkTag = LinkTag;
+	Link.Nodes = Nodes;
+	NormalizeSpecialLinkNodesForType(Link.Nodes, LinkType);
+
+	if (!ResolveSpecialLinkTriangles(Link))
+	{
+		return INDEX_NONE;
+	}
+
+	const int32 LinkIndex = NavigationData.SpecialLinks.Add(Link);
+	EnsureSpecialLinkRuntimeStateSize();
+	MarkRuntimeStateDirty();
+	return LinkIndex;
+}
+
+int32 UMobileSurfaceNavComponent::AddSpecialLinkFromWorldNodes(
+	const FName LinkId,
+	const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes,
+	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const EMobileSurfaceNavLinkTraversalMode TraversalMode,
 	const bool bBidirectional,
 	const float Cost,
 	const FName LinkTag)
@@ -324,14 +423,41 @@ int32 UMobileSurfaceNavComponent::AddSpecialLinkFromWorldPoints(
 	}
 
 	const FTransform WorldToLocal = SpaceComponent->GetComponentTransform().Inverse();
-	return AddSpecialLinkFromLocalPoints(
-		LinkId,
-		WorldToLocal.TransformPosition(FromWorldPosition),
-		WorldToLocal.TransformPosition(ToWorldPosition),
-		LinkType,
-		bBidirectional,
-		Cost,
-		LinkTag);
+	TArray<FMobileSurfaceNavSpecialLinkNode> LocalNodes = Nodes;
+	for (FMobileSurfaceNavSpecialLinkNode& Node : LocalNodes)
+	{
+		Node.LocalPosition = WorldToLocal.TransformPosition(Node.LocalPosition);
+	}
+
+	return AddSpecialLinkFromLocalNodes(LinkId, LocalNodes, LinkType, TraversalMode, bBidirectional, Cost, LinkTag);
+}
+
+int32 UMobileSurfaceNavComponent::AddSpecialLinkFromSceneComponents(
+	const FName LinkId,
+	const TArray<USceneComponent*>& SceneComponents,
+	const EMobileSurfaceNavSpecialLinkType LinkType,
+	const EMobileSurfaceNavLinkTraversalMode TraversalMode,
+	const bool bBidirectional,
+	const float Cost,
+	const FName LinkTag)
+{
+	TArray<FMobileSurfaceNavSpecialLinkNode> Nodes;
+	Nodes.Reserve(SceneComponents.Num());
+
+	for (int32 ComponentIndex = 0; ComponentIndex < SceneComponents.Num(); ++ComponentIndex)
+	{
+		const USceneComponent* SceneComponent = SceneComponents[ComponentIndex];
+		if (!SceneComponent)
+		{
+			continue;
+		}
+
+		FMobileSurfaceNavSpecialLinkNode& Node = Nodes.AddDefaulted_GetRef();
+		Node.LocalPosition = SceneComponent->GetComponentLocation();
+		Node.StopIndex = LinkType == EMobileSurfaceNavSpecialLinkType::Elevator ? ComponentIndex : INDEX_NONE;
+	}
+
+	return AddSpecialLinkFromWorldNodes(LinkId, Nodes, LinkType, TraversalMode, bBidirectional, Cost, LinkTag);
 }
 
 bool UMobileSurfaceNavComponent::SetSpecialLinkEnabled(const int32 LinkIndex, const bool bEnabled)
@@ -346,6 +472,84 @@ bool UMobileSurfaceNavComponent::SetSpecialLinkEnabled(const int32 LinkIndex, co
 	return true;
 }
 
+bool UMobileSurfaceNavComponent::SetSpecialLinkTraversalMode(const int32 LinkIndex, const EMobileSurfaceNavLinkTraversalMode TraversalMode)
+{
+	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
+	{
+		return false;
+	}
+
+	NavigationData.SpecialLinks[LinkIndex].TraversalMode = TraversalMode;
+	FMobileSurfaceNavSpecialLink& Link = NavigationData.SpecialLinks[LinkIndex];
+	if (Link.ElevatorActor && Link.LinkType == EMobileSurfaceNavSpecialLinkType::Elevator)
+	{
+		if (const USceneComponent* SpaceComponent = GetNavigationSpaceComponent())
+		{
+			Link.ElevatorActor->ConfigureServiceLocations(
+				BuildSpecialLinkWorldNodeLocations(SpaceComponent, Link),
+				Link.TraversalMode,
+				false);
+		}
+	}
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetSpecialLinkElevatorActor(
+	const int32 LinkIndex,
+	AMobileSurfaceNavElevator* ElevatorActor)
+{
+	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
+	{
+		return false;
+	}
+
+	FMobileSurfaceNavSpecialLink& Link = NavigationData.SpecialLinks[LinkIndex];
+	Link.ElevatorActor = ElevatorActor;
+	if (ElevatorActor && Link.Nodes.IsValidIndex(0))
+	{
+		if (const USceneComponent* SpaceComponent = GetNavigationSpaceComponent())
+		{
+			ElevatorActor->ConfigureServiceLocations(
+				BuildSpecialLinkWorldNodeLocations(SpaceComponent, Link),
+				Link.TraversalMode,
+				true);
+		}
+	}
+	MarkRuntimeStateDirty();
+	return true;
+}
+
+bool UMobileSurfaceNavComponent::SetSpecialLinkNodes(const int32 LinkIndex, const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes)
+{
+	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex) || Nodes.Num() < 2)
+	{
+		return false;
+	}
+
+	FMobileSurfaceNavSpecialLink& Link = NavigationData.SpecialLinks[LinkIndex];
+	Link.Nodes = Nodes;
+	NormalizeSpecialLinkNodesForType(Link.Nodes, Link.LinkType);
+	if (!ResolveSpecialLinkTriangles(Link))
+	{
+		return false;
+	}
+
+	if (Link.ElevatorActor && Link.LinkType == EMobileSurfaceNavSpecialLinkType::Elevator && Link.Nodes.IsValidIndex(0))
+	{
+		if (const USceneComponent* SpaceComponent = GetNavigationSpaceComponent())
+		{
+			Link.ElevatorActor->ConfigureServiceLocations(
+				BuildSpecialLinkWorldNodeLocations(SpaceComponent, Link),
+				Link.TraversalMode,
+				true);
+		}
+	}
+
+	MarkRuntimeStateDirty();
+	return true;
+}
+
 bool UMobileSurfaceNavComponent::RemoveSpecialLink(const int32 LinkIndex)
 {
 	if (!NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
@@ -354,6 +558,10 @@ bool UMobileSurfaceNavComponent::RemoveSpecialLink(const int32 LinkIndex)
 	}
 
 	NavigationData.SpecialLinks.RemoveAt(LinkIndex);
+	if (LadderRuntimeStates.IsValidIndex(LinkIndex))
+	{
+		LadderRuntimeStates.RemoveAt(LinkIndex);
+	}
 	if (SelectedSpecialLinkIndex == LinkIndex)
 	{
 		SelectedSpecialLinkIndex = INDEX_NONE;
@@ -369,6 +577,7 @@ bool UMobileSurfaceNavComponent::RemoveSpecialLink(const int32 LinkIndex)
 void UMobileSurfaceNavComponent::ClearSpecialLinks()
 {
 	NavigationData.SpecialLinks.Reset();
+	LadderRuntimeStates.Reset();
 	SelectedSpecialLinkIndex = INDEX_NONE;
 	MarkRuntimeStateDirty();
 }
@@ -376,6 +585,68 @@ void UMobileSurfaceNavComponent::ClearSpecialLinks()
 int32 UMobileSurfaceNavComponent::GetSpecialLinkCount() const
 {
 	return NavigationData.SpecialLinks.Num();
+}
+
+bool UMobileSurfaceNavComponent::TryAcquireLadderTraversal(const int32 LinkIndex, AActor* Agent, const int32 DirectionSign)
+{
+	if (!Agent || DirectionSign == 0 || !NavigationData.SpecialLinks.IsValidIndex(LinkIndex))
+	{
+		return false;
+	}
+
+	const FMobileSurfaceNavSpecialLink& Link = NavigationData.SpecialLinks[LinkIndex];
+	if (Link.LinkType != EMobileSurfaceNavSpecialLinkType::Ladder)
+	{
+		return false;
+	}
+
+	FMobileSurfaceNavLadderRuntimeState* RuntimeState = GetLadderRuntimeState(LinkIndex);
+	if (!RuntimeState)
+	{
+		return false;
+	}
+
+	CleanupLadderRuntimeState(*RuntimeState);
+	for (const TWeakObjectPtr<AActor>& ActiveAgent : RuntimeState->ActiveAgents)
+	{
+		if (ActiveAgent.Get() == Agent)
+		{
+			return true;
+		}
+	}
+
+	if (!RuntimeState->ActiveAgents.IsEmpty() && RuntimeState->ActiveDirectionSign != DirectionSign)
+	{
+		return false;
+	}
+
+	RuntimeState->ActiveAgents.Add(Agent);
+	RuntimeState->ActiveDirectionSign = DirectionSign;
+	return true;
+}
+
+void UMobileSurfaceNavComponent::ReleaseLadderTraversal(const int32 LinkIndex, AActor* Agent)
+{
+	if (!Agent)
+	{
+		return;
+	}
+
+	FMobileSurfaceNavLadderRuntimeState* RuntimeState = GetLadderRuntimeState(LinkIndex);
+	if (!RuntimeState)
+	{
+		return;
+	}
+
+	RuntimeState->ActiveAgents.RemoveAllSwap([Agent](const TWeakObjectPtr<AActor>& ActiveAgent)
+	{
+		return !ActiveAgent.IsValid() || ActiveAgent.Get() == Agent;
+	});
+
+	if (RuntimeState->ActiveAgents.IsEmpty())
+	{
+		RuntimeState->ActiveDirectionSign = 0;
+	}
 }
 
 void UMobileSurfaceNavComponent::OpenSelectedPortal()
@@ -478,19 +749,26 @@ void UMobileSurfaceNavComponent::MarkRuntimeStateDirty()
 
 bool UMobileSurfaceNavComponent::ResolveSpecialLinkTriangles(FMobileSurfaceNavSpecialLink& Link) const
 {
-	Link.FromTriangleIndex = FindContainingTriangle(Link.FromLocalPosition);
-	if (Link.FromTriangleIndex == INDEX_NONE)
+	if (Link.Nodes.Num() < 2)
 	{
-		Link.FromTriangleIndex = FindNearestTriangle(Link.FromLocalPosition);
+		return false;
 	}
 
-	Link.ToTriangleIndex = FindContainingTriangle(Link.ToLocalPosition);
-	if (Link.ToTriangleIndex == INDEX_NONE)
+	for (FMobileSurfaceNavSpecialLinkNode& Node : Link.Nodes)
 	{
-		Link.ToTriangleIndex = FindNearestTriangle(Link.ToLocalPosition);
+		Node.TriangleIndex = FindContainingTriangle(Node.LocalPosition);
+		if (Node.TriangleIndex == INDEX_NONE)
+		{
+			Node.TriangleIndex = FindNearestTriangle(Node.LocalPosition);
+		}
+
+		if (Node.TriangleIndex == INDEX_NONE)
+		{
+			return false;
+		}
 	}
 
-	return Link.FromTriangleIndex != INDEX_NONE && Link.ToTriangleIndex != INDEX_NONE;
+	return true;
 }
 
 void UMobileSurfaceNavComponent::BeginPlay()
@@ -587,6 +865,45 @@ void UMobileSurfaceNavComponent::UpdateTickState()
 {
 	const bool bNeedsPortalLabelTick = bDrawPortalLabels && bDrawPortals && NavigationData.bIsValid;
 	SetComponentTickEnabled((bDrawDebugEveryTick || bAutoGenerateDebugPaths || bNeedsPortalLabelTick) && NavigationData.bIsValid);
+}
+
+void UMobileSurfaceNavComponent::EnsureSpecialLinkRuntimeStateSize()
+{
+	LadderRuntimeStates.SetNum(NavigationData.SpecialLinks.Num());
+}
+
+FMobileSurfaceNavLadderRuntimeState* UMobileSurfaceNavComponent::GetLadderRuntimeState(const int32 LinkIndex)
+{
+	EnsureSpecialLinkRuntimeStateSize();
+	if (!LadderRuntimeStates.IsValidIndex(LinkIndex))
+	{
+		return nullptr;
+	}
+
+	return &LadderRuntimeStates[LinkIndex];
+}
+
+const FMobileSurfaceNavLadderRuntimeState* UMobileSurfaceNavComponent::GetLadderRuntimeState(const int32 LinkIndex) const
+{
+	if (!LadderRuntimeStates.IsValidIndex(LinkIndex))
+	{
+		return nullptr;
+	}
+
+	return &LadderRuntimeStates[LinkIndex];
+}
+
+void UMobileSurfaceNavComponent::CleanupLadderRuntimeState(FMobileSurfaceNavLadderRuntimeState& RuntimeState) const
+{
+	RuntimeState.ActiveAgents.RemoveAllSwap([](const TWeakObjectPtr<AActor>& ActiveAgent)
+	{
+		return !ActiveAgent.IsValid();
+	});
+
+	if (RuntimeState.ActiveAgents.IsEmpty())
+	{
+		RuntimeState.ActiveDirectionSign = 0;
+	}
 }
 
 void UMobileSurfaceNavComponent::GenerateDebugPath()

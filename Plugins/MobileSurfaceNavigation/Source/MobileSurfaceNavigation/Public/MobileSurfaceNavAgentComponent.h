@@ -7,6 +7,7 @@
 #include "MobileSurfaceNavAgentComponent.generated.h"
 
 class UMobileSurfaceNavComponent;
+class AMobileSurfaceNavElevator;
 
 UCLASS(ClassGroup = (Navigation), BlueprintType, Blueprintable, meta = (BlueprintSpawnableComponent))
 class MOBILESURFACENAVIGATION_API UMobileSurfaceNavAgentComponent : public UActorComponent
@@ -34,6 +35,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	float GetAgentRadius() const;
 
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	EMobileSurfaceNavAgentState GetAgentState() const;
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	UMobileSurfaceNavComponent* GetNavigationComponent() const;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -48,6 +55,19 @@ private:
 	void ClearCurrentPath();
 	void HandleMoveCompleted();
 	bool RepathToActiveTarget(bool bPreserveCurrentPathUntilSuccess = false);
+	bool BeginCurrentSpecialLink();
+	bool TickCurrentSpecialLink(float DeltaTime);
+	bool IsElevatorCurrentlyAvailable(const FMobileSurfaceNavPathSegment& Segment) const;
+	float GetSpecialLinkTraversalSpeed(const FMobileSurfaceNavPathSegment& Segment) const;
+	void ResetActiveSpecialLinkState();
+	bool TryBeginLadderTraversal(const FMobileSurfaceNavPathSegment& Segment, const FMobileSurfaceNavSpecialLink& Link);
+	bool TickCurrentLadderTraversal(const FMobileSurfaceNavPathSegment& Segment, const FMobileSurfaceNavSpecialLink& Link, float DeltaTime);
+	void CompleteCurrentSpecialLinkSegment();
+	bool IsInBlockingSpecialLinkTraversal() const;
+	bool ConsumeDeferredMoveRequestFromCurrentLocation();
+	bool IsBoardedOnActiveElevator() const;
+	void QueueDeferredMoveRequest(const FVector& TargetLocalPosition);
+	void ConsumeDeferredMoveRequest();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMobileSurfaceNavComponent> NavigationComponent = nullptr;
@@ -88,6 +108,21 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Recovery", meta = (AllowPrivateAccess = "true", ClampMin = "0"))
 	int32 MaxSameWaypointStuckChecks = 3;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Special Links", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float LadderTraversalSpeed = 120.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Special Links", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float ElevatorTraversalSpeed = 120.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Special Links", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float JumpTraversalSpeed = 220.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Special Links", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float ElevatorAvailabilityInterval = 4.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Special Links", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float ElevatorAvailabilityWindow = 1.25f;
+
 	UPROPERTY(Transient)
 	FMobileSurfaceNavPath CurrentPath;
 
@@ -125,6 +160,33 @@ private:
 	int32 CurrentWaypointIndex = 0;
 
 	UPROPERTY(Transient)
+	int32 CurrentSegmentIndex = 0;
+
+	UPROPERTY(Transient)
+	TWeakObjectPtr<AMobileSurfaceNavElevator> ActiveElevatorActor;
+
+	UPROPERTY(Transient)
+	bool bElevatorBoardingRequested = false;
+
+	UPROPERTY(Transient)
+	int32 ActiveLadderLinkIndex = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	int32 ActiveLadderDirectionSign = 0;
+
+	UPROPERTY(Transient)
+	TArray<FVector> ActiveSpecialLinkRouteWorldLocations;
+
+	UPROPERTY(Transient)
+	int32 ActiveSpecialLinkRouteTargetIndex = INDEX_NONE;
+
+	UPROPERTY(Transient)
+	bool bHasDeferredMoveRequest = false;
+
+	UPROPERTY(Transient)
+	FVector DeferredMoveTargetLocalPosition = FVector::ZeroVector;
+
+	UPROPERTY(Transient)
 	FVector LastProgressWorldPosition = FVector::ZeroVector;
 
 	UPROPERTY(Transient)
@@ -138,6 +200,9 @@ private:
 
 	UPROPERTY(Transient)
 	float RepathTimer = 0.0f;
+
+	UPROPERTY(Transient)
+	EMobileSurfaceNavAgentState AgentState = EMobileSurfaceNavAgentState::Idle;
 
 	UPROPERTY(Transient)
 	FRandomStream RandomStream;

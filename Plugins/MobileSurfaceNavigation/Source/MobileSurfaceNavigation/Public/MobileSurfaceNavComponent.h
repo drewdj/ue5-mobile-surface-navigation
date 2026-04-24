@@ -9,7 +9,14 @@
 class UStaticMeshComponent;
 class USceneComponent;
 class AMobileSurfaceNavAgent;
+class AMobileSurfaceNavElevator;
 class UTextRenderComponent;
+
+struct FMobileSurfaceNavLadderRuntimeState
+{
+	TArray<TWeakObjectPtr<AActor>> ActiveAgents;
+	int32 ActiveDirectionSign = 0;
+};
 
 UCLASS(ClassGroup = (Navigation), BlueprintType, Blueprintable, meta = (BlueprintSpawnableComponent))
 class MOBILESURFACENAVIGATION_API UMobileSurfaceNavComponent : public UActorComponent
@@ -93,7 +100,8 @@ public:
 		FName LinkId,
 		const FVector& FromLocalPosition,
 		const FVector& ToLocalPosition,
-		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct,
 		bool bBidirectional = true,
 		float Cost = 100.0f,
 		FName LinkTag = NAME_None);
@@ -103,13 +111,53 @@ public:
 		FName LinkId,
 		const FVector& FromWorldPosition,
 		const FVector& ToWorldPosition,
-		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Generic,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct,
+		bool bBidirectional = true,
+		float Cost = 100.0f,
+		FName LinkTag = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	int32 AddSpecialLinkFromLocalNodes(
+		FName LinkId,
+		const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct,
+		bool bBidirectional = true,
+		float Cost = 100.0f,
+		FName LinkTag = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	int32 AddSpecialLinkFromWorldNodes(
+		FName LinkId,
+		const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct,
+		bool bBidirectional = true,
+		float Cost = 100.0f,
+		FName LinkTag = NAME_None);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	int32 AddSpecialLinkFromSceneComponents(
+		FName LinkId,
+		const TArray<USceneComponent*>& SceneComponents,
+		EMobileSurfaceNavSpecialLinkType LinkType = EMobileSurfaceNavSpecialLinkType::Ladder,
+		EMobileSurfaceNavLinkTraversalMode TraversalMode = EMobileSurfaceNavLinkTraversalMode::Direct,
 		bool bBidirectional = true,
 		float Cost = 100.0f,
 		FName LinkTag = NAME_None);
 
 	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
 	bool SetSpecialLinkEnabled(int32 LinkIndex, bool bEnabled);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	bool SetSpecialLinkTraversalMode(int32 LinkIndex, EMobileSurfaceNavLinkTraversalMode TraversalMode);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	bool SetSpecialLinkElevatorActor(int32 LinkIndex, AMobileSurfaceNavElevator* ElevatorActor);
+
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
+	bool SetSpecialLinkNodes(int32 LinkIndex, const TArray<FMobileSurfaceNavSpecialLinkNode>& Nodes);
 
 	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation|Special Links")
 	bool RemoveSpecialLink(int32 LinkIndex);
@@ -119,6 +167,9 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation|Special Links")
 	int32 GetSpecialLinkCount() const;
+
+	bool TryAcquireLadderTraversal(int32 LinkIndex, AActor* Agent, int32 DirectionSign);
+	void ReleaseLadderTraversal(int32 LinkIndex, AActor* Agent);
 
 	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Mobile Surface Navigation|Editor Tools")
 	void OpenSelectedPortal();
@@ -170,6 +221,10 @@ private:
 	void UpdatePortalLabelFacing();
 	void DestroyPortalLabelComponents();
 	void UpdateTickState();
+	void EnsureSpecialLinkRuntimeStateSize();
+	FMobileSurfaceNavLadderRuntimeState* GetLadderRuntimeState(int32 LinkIndex);
+	const FMobileSurfaceNavLadderRuntimeState* GetLadderRuntimeState(int32 LinkIndex) const;
+	void CleanupLadderRuntimeState(FMobileSurfaceNavLadderRuntimeState& RuntimeState) const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true", UseComponentPicker, AllowedClasses = "/Script/Engine.StaticMeshComponent"))
 	FComponentReference NavigationSourceMesh;
@@ -287,4 +342,6 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UTextRenderComponent>> PortalLabelComponents;
+
+	TArray<FMobileSurfaceNavLadderRuntimeState> LadderRuntimeStates;
 };

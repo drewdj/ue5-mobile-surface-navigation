@@ -142,16 +142,28 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 		{
 			const FMobileSurfaceNavSpecialLink& Link = NavData.SpecialLinks[LinkIndex];
 			const FColor LinkColor = LinkIndex == Settings.HighlightSpecialLinkIndex ? FColor::White : Link.bEnabled ? FColor::Cyan : FColor::Red;
-			const FVector From = LocalToWorld.TransformPosition(Link.FromLocalPosition);
-			const FVector To = LocalToWorld.TransformPosition(Link.ToLocalPosition);
-			DrawDebugLine(World, From, To, LinkColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 3.0f);
-			DrawDebugPoint(World, From, Settings.VertexSize * 1.5f, LinkColor, false, Settings.Duration, DepthPriority);
-			DrawDebugPoint(World, To, Settings.VertexSize * 1.5f, LinkColor, false, Settings.Duration, DepthPriority);
+			FVector LabelAnchor = FVector::ZeroVector;
+			for (int32 NodeIndex = 0; NodeIndex < Link.GetNodeCount(); ++NodeIndex)
+			{
+				const FVector NodeWorld = LocalToWorld.TransformPosition(Link.GetNodeLocalPosition(NodeIndex));
+				if (NodeIndex == 0)
+				{
+					LabelAnchor = NodeWorld;
+				}
+				else
+				{
+					const FVector PreviousNodeWorld = LocalToWorld.TransformPosition(Link.GetNodeLocalPosition(NodeIndex - 1));
+					DrawDebugLine(World, PreviousNodeWorld, NodeWorld, LinkColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 3.0f);
+					LabelAnchor = (LabelAnchor + NodeWorld) * 0.5f;
+				}
+
+				DrawDebugPoint(World, NodeWorld, Settings.VertexSize * 1.5f, LinkColor, false, Settings.Duration, DepthPriority);
+			}
 
 			const FString Label = Link.LinkId.IsNone()
 				? FString::Printf(TEXT("L%d"), LinkIndex)
 				: FString::Printf(TEXT("L%d %s"), LinkIndex, *Link.LinkId.ToString());
-			DrawDebugString(World, (From + To) * 0.5f + FVector(0.0, 0.0, 35.0), Label, nullptr, LinkColor, Settings.Duration, false, 1.0f);
+			DrawDebugString(World, LabelAnchor + FVector(0.0, 0.0, 35.0), Label, nullptr, LinkColor, Settings.Duration, false, 1.0f);
 		}
 	}
 
