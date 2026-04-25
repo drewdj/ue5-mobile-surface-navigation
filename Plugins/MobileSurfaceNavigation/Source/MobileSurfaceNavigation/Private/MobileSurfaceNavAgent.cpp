@@ -93,6 +93,18 @@ void AMobileSurfaceNavAgent::StopMovement()
 	}
 }
 
+void AMobileSurfaceNavAgent::SetStateLabelEnabled(const bool bEnabled)
+{
+	bShowStateLabel = bEnabled;
+	if (StateLabel)
+	{
+		StateLabel->SetVisibility(bEnabled);
+		StateLabel->SetHiddenInGame(!bEnabled);
+	}
+
+	SetActorTickEnabled(bEnabled);
+}
+
 UMobileSurfaceNavComponent* AMobileSurfaceNavAgent::GetNavigationComponent() const
 {
 	return AgentComponent ? AgentComponent->GetNavigationComponent() : nullptr;

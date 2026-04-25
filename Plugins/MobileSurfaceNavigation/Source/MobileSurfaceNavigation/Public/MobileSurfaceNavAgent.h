@@ -30,6 +30,9 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
 	void StopMovement();
 
+	UFUNCTION(BlueprintCallable, Category = "Mobile Surface Navigation")
+	void SetStateLabelEnabled(bool bEnabled);
+
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	UMobileSurfaceNavComponent* GetNavigationComponent() const;
 

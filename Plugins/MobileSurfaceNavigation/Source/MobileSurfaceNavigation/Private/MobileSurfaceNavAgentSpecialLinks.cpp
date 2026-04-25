@@ -7,16 +7,16 @@
 #include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
-DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavAgent, Log, All);
+DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavAgentSpecialLinks, Log, All);
 
 namespace
 {
-	static const TCHAR* LexBoolText(const bool bValue)
+	static const TCHAR* LexSpecialLinkBoolText(const bool bValue)
 	{
 		return bValue ? TEXT("true") : TEXT("false");
 	}
 
-	static const TCHAR* LexAgentStateText(const EMobileSurfaceNavAgentState State)
+	static const TCHAR* LexSpecialLinkAgentStateText(const EMobileSurfaceNavAgentState State)
 	{
 		switch (State)
 		{
@@ -157,7 +157,7 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 		{
 			if (bLogPathRequests)
 			{
-				UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator segment has invalid special link index=%d"),
+				UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Warning, TEXT("%s elevator segment has invalid special link index=%d"),
 					*GetNameSafe(GetOwner()),
 					Segment.SpecialLinkIndex);
 			}
@@ -168,7 +168,7 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 		const FMobileSurfaceNavSpecialLink& Link = NavigationComponent->GetNavigationData().SpecialLinks[Segment.SpecialLinkIndex];
 		if (bLogPathRequests)
 		{
-			UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s begin elevator segment: linkIndex=%d linkId=%s actor=%s entryNode=%d exitNode=%d startWp=%d endWp=%d"),
+			UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Log, TEXT("%s begin elevator segment: linkIndex=%d linkId=%s actor=%s entryNode=%d exitNode=%d startWp=%d endWp=%d"),
 				*GetNameSafe(GetOwner()),
 				Segment.SpecialLinkIndex,
 				*Link.LinkId.ToString(),
@@ -194,7 +194,7 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 			{
 				if (bLogPathRequests)
 				{
-					UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator link '%s' has invalid node setup entryNode=%d exitNode=%d"),
+					UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Warning, TEXT("%s elevator link '%s' has invalid node setup entryNode=%d exitNode=%d"),
 						*GetNameSafe(Owner),
 						*Link.LinkId.ToString(),
 						Segment.SpecialLinkEntryNodeIndex,
@@ -217,7 +217,7 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 				const TArray<FVector> RouteWorldLocations = BuildSpecialLinkRouteWorldLocations(SpaceComponent, Segment, Link);
 				if (bLogPathRequests)
 				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s requesting elevator boarding: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s"),
+					UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Log, TEXT("%s requesting elevator boarding: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s"),
 						*GetNameSafe(Owner),
 						*GetNameSafe(ElevatorActor),
 						EntryNodeIndex,
@@ -229,7 +229,7 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 				{
 					if (bLogPathRequests)
 					{
-						UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator boarding request rejected by %s"),
+						UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Warning, TEXT("%s elevator boarding request rejected by %s"),
 							*GetNameSafe(Owner),
 							*GetNameSafe(ElevatorActor));
 					}
@@ -243,16 +243,16 @@ bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
 				: EMobileSurfaceNavAgentState::WaitingForElevator;
 			if (bLogPathRequests)
 			{
-				UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s elevator state after begin: %s"),
+				UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Log, TEXT("%s elevator state after begin: %s"),
 					*GetNameSafe(Owner),
-					LexAgentStateText(AgentState));
+					LexSpecialLinkAgentStateText(AgentState));
 			}
 			return true;
 		}
 
 		if (bLogPathRequests)
 		{
-			UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator link '%s' has no ElevatorActor assigned"),
+			UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Warning, TEXT("%s elevator link '%s' has no ElevatorActor assigned"),
 				*GetNameSafe(GetOwner()),
 				*Link.LinkId.ToString());
 		}
@@ -323,20 +323,20 @@ bool UMobileSurfaceNavAgentComponent::TickCurrentSpecialLink(const float DeltaTi
 				const TArray<FVector> RouteWorldLocations = BuildSpecialLinkRouteWorldLocations(SpaceComponent, Segment, Link);
 				if (bLogPathRequests)
 				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s refresh elevator boarding request: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s requested=%s"),
+					UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Log, TEXT("%s refresh elevator boarding request: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s requested=%s"),
 						*GetNameSafe(Owner),
 						*GetNameSafe(ElevatorActor),
 						EntryNodeIndex,
 						ExitNodeIndex,
 						*EntryWorld.ToCompactString(),
 						*ExitWorld.ToCompactString(),
-						LexBoolText(bElevatorBoardingRequested));
+						LexSpecialLinkBoolText(bElevatorBoardingRequested));
 				}
 				if (!ElevatorActor->RequestBoardingWithRoute(Owner, RouteWorldLocations))
 				{
 					if (bLogPathRequests)
 					{
-						UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator refresh request rejected by %s"),
+						UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Warning, TEXT("%s elevator refresh request rejected by %s"),
 							*GetNameSafe(Owner),
 							*GetNameSafe(ElevatorActor));
 					}
@@ -351,7 +351,7 @@ bool UMobileSurfaceNavAgentComponent::TickCurrentSpecialLink(const float DeltaTi
 			{
 				if (bLogPathRequests)
 				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s elevator traversal complete on %s"),
+					UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Log, TEXT("%s elevator traversal complete on %s"),
 						*GetNameSafe(Owner),
 						*GetNameSafe(ElevatorActor));
 				}
@@ -376,7 +376,7 @@ bool UMobileSurfaceNavAgentComponent::TickCurrentSpecialLink(const float DeltaTi
 			{
 				if (bLogPathRequests)
 				{
-					UE_LOG(LogMobileSurfaceNavAgent, Verbose, TEXT("%s riding elevator %s at %s"),
+					UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Verbose, TEXT("%s riding elevator %s at %s"),
 						*GetNameSafe(Owner),
 						*GetNameSafe(ElevatorActor),
 						*RideWorldLocation.ToCompactString());
@@ -396,7 +396,7 @@ bool UMobileSurfaceNavAgentComponent::TickCurrentSpecialLink(const float DeltaTi
 			}
 			if (bLogPathRequests)
 			{
-				UE_LOG(LogMobileSurfaceNavAgent, Verbose, TEXT("%s waiting for elevator %s near entry=%s current=%s"),
+				UE_LOG(LogMobileSurfaceNavAgentSpecialLinks, Verbose, TEXT("%s waiting for elevator %s near entry=%s current=%s"),
 					*GetNameSafe(Owner),
 					*GetNameSafe(ElevatorActor),
 					*EntryWorld.ToCompactString(),
@@ -666,3 +666,4 @@ bool UMobileSurfaceNavAgentComponent::IsBoardedOnActiveElevator() const
 	const AMobileSurfaceNavElevator* ElevatorActor = ActiveElevatorActor.Get();
 	return Owner && ElevatorActor && ElevatorActor->IsAgentBoarded(const_cast<AActor*>(Owner));
 }
+
