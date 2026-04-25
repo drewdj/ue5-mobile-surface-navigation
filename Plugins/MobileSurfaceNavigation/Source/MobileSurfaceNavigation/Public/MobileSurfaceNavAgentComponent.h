@@ -74,8 +74,12 @@ private:
 	const USceneComponent* GetNavigationSpaceComponent() const;
 	void QueueDeferredMoveRequest(const FVector& TargetLocalPosition);
 	void ConsumeDeferredMoveRequest();
+	void RebuildFollowPath();
+	void UpdateFacing(const float DeltaTime);
 	void DrawCurrentPathDebug() const;
 	void AdvanceBeyondCurrentSegmentOrComplete();
+	const TArray<FVector>& GetActivePathWaypoints() const;
+	const TArray<FMobileSurfaceNavPathSegment>& GetActivePathSegments() const;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMobileSurfaceNavComponent> NavigationComponent = nullptr;
@@ -116,6 +120,42 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawCurrentPathTriangleLabels = false;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Smoothing", meta = (AllowPrivateAccess = "true"))
+	bool bEnablePathSmoothing = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Smoothing", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float CornerSmoothingDistance = 45.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Smoothing", meta = (AllowPrivateAccess = "true", ClampMin = "0.0", ClampMax = "0.49"))
+	float CornerSmoothingSegmentFraction = 0.3f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Smoothing", meta = (AllowPrivateAccess = "true", ClampMin = "0"))
+	int32 CornerSmoothingSubdivisions = 6;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Smoothing", meta = (AllowPrivateAccess = "true", ClampMin = "-1.0", ClampMax = "1.0"))
+	float CornerSmoothingMaxDot = 0.985f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Rotation", meta = (AllowPrivateAccess = "true"))
+	bool bEnableSmoothRotation = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Rotation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float MaxTurnRateDegreesPerSecond = 360.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Rotation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float RotationMinDirectionDistance = 2.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Rotation", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float RotationLookAheadDistance = 60.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawSmoothedPathDebug = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawFacingDebug = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "1.0"))
+	float FacingDebugLength = 60.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Recovery", meta = (AllowPrivateAccess = "true"))
 	bool bEnableStuckRecovery = true;
 
@@ -145,6 +185,15 @@ private:
 
 	UPROPERTY(Transient)
 	FMobileSurfaceNavPath CurrentPath;
+
+	UPROPERTY(Transient)
+	TArray<FVector> FollowPathWaypoints;
+
+	UPROPERTY(Transient)
+	TArray<FMobileSurfaceNavPathSegment> FollowPathSegments;
+
+	UPROPERTY(Transient)
+	float FollowPathEstimatedLength = 0.0f;
 
 	UPROPERTY(Transient)
 	FMobileSurfacePathRequestHandle PendingPathRequest;
@@ -208,6 +257,12 @@ private:
 
 	UPROPERTY(Transient)
 	bool bHasCachedNavigationLocalPosition = false;
+
+	UPROPERTY(Transient)
+	FVector LastFacingTargetWorld = FVector::ZeroVector;
+
+	UPROPERTY(Transient)
+	bool bHasLastFacingTargetWorld = false;
 
 	UPROPERTY(Transient)
 	bool bHasDeferredMoveRequest = false;

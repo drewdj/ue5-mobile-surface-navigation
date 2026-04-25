@@ -3,6 +3,7 @@
 #include "MobileSurfaceNavElevator.h"
 #include "MobileSurfaceNavComponent.h"
 #include "MobileSurfaceNavSubsystem.h"
+#include "MobileSurfaceNavigationQuery.h"
 
 #include "Components/SceneComponent.h"
 #include "DrawDebugHelpers.h"
@@ -10,6 +11,15 @@
 #include "GameFramework/Actor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavAgent, Log, All);
+
+namespace
+{
+	static FVector EvaluateQuadraticBezier(const FVector& P0, const FVector& P1, const FVector& P2, const float T)
+	{
+		const float OneMinusT = 1.0f - T;
+		return OneMinusT * OneMinusT * P0 + 2.0f * OneMinusT * T * P1 + T * T * P2;
+	}
+}
 
 UMobileSurfaceNavAgentComponent::UMobileSurfaceNavAgentComponent()
 {
@@ -52,6 +62,236 @@ static const TCHAR* LexAgentStateText(const EMobileSurfaceNavAgentState State)
 static const TCHAR* LexBoolText(const bool bValue)
 {
 	return bValue ? TEXT("true") : TEXT("false");
+}
+
+const TArray<FVector>& UMobileSurfaceNavAgentComponent::GetActivePathWaypoints() const
+{
+	return FollowPathWaypoints.IsEmpty() ? CurrentPath.Waypoints : FollowPathWaypoints;
+}
+
+const TArray<FMobileSurfaceNavPathSegment>& UMobileSurfaceNavAgentComponent::GetActivePathSegments() const
+{
+	return FollowPathSegments.IsEmpty() ? CurrentPath.Segments : FollowPathSegments;
+}
+
+void UMobileSurfaceNavAgentComponent::RebuildFollowPath()
+{
+	FollowPathWaypoints.Reset();
+	FollowPathSegments.Reset();
+	FollowPathEstimatedLength = 0.0f;
+
+	if (!CurrentPath.bIsValid || CurrentPath.Waypoints.Num() < 2)
+	{
+		return;
+	}
+
+	const TArray<FVector>& SourceWaypoints = CurrentPath.Waypoints;
+	const TArray<FMobileSurfaceNavPathSegment>& SourceSegments = CurrentPath.Segments;
+	auto AppendWaypointIfNeeded = [](TArray<FVector>& Waypoints, const FVector& Point) -> int32
+	{
+		if (Waypoints.IsEmpty() || !Waypoints.Last().Equals(Point, UE_KINDA_SMALL_NUMBER))
+		{
+			Waypoints.Add(Point);
+		}
+		return Waypoints.Num() - 1;
+	};
+
+	for (const FMobileSurfaceNavPathSegment& SourceSegment : SourceSegments)
+	{
+		FMobileSurfaceNavPathSegment FollowSegment = SourceSegment;
+		FollowSegment.StartWaypointIndex = INDEX_NONE;
+		FollowSegment.EndWaypointIndex = INDEX_NONE;
+
+		const bool bCanSmoothSegment =
+			bEnablePathSmoothing &&
+			SourceSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk &&
+			SourceWaypoints.IsValidIndex(SourceSegment.StartWaypointIndex) &&
+			SourceWaypoints.IsValidIndex(SourceSegment.EndWaypointIndex) &&
+			SourceSegment.EndWaypointIndex - SourceSegment.StartWaypointIndex >= 1;
+
+		if (!bCanSmoothSegment)
+		{
+			for (int32 WaypointIndex = SourceSegment.StartWaypointIndex; WaypointIndex <= SourceSegment.EndWaypointIndex; ++WaypointIndex)
+			{
+				if (!SourceWaypoints.IsValidIndex(WaypointIndex))
+				{
+					continue;
+				}
+
+				const int32 AppendedIndex = AppendWaypointIfNeeded(FollowPathWaypoints, SourceWaypoints[WaypointIndex]);
+				if (FollowSegment.StartWaypointIndex == INDEX_NONE)
+				{
+					FollowSegment.StartWaypointIndex = AppendedIndex;
+				}
+				FollowSegment.EndWaypointIndex = AppendedIndex;
+			}
+
+			if (FollowSegment.StartWaypointIndex != INDEX_NONE && FollowSegment.EndWaypointIndex != INDEX_NONE)
+			{
+				FollowPathSegments.Add(FollowSegment);
+			}
+			continue;
+		}
+
+		const int32 StartAppendedIndex = AppendWaypointIfNeeded(FollowPathWaypoints, SourceWaypoints[SourceSegment.StartWaypointIndex]);
+		FollowSegment.StartWaypointIndex = StartAppendedIndex;
+		FollowSegment.EndWaypointIndex = StartAppendedIndex;
+		int32 SmoothedCornerCount = 0;
+
+		for (int32 WaypointIndex = SourceSegment.StartWaypointIndex + 1; WaypointIndex < SourceSegment.EndWaypointIndex; ++WaypointIndex)
+		{
+			const FVector PrevPoint = SourceWaypoints[WaypointIndex - 1];
+			const FVector CornerPoint = SourceWaypoints[WaypointIndex];
+			const FVector NextPoint = SourceWaypoints[WaypointIndex + 1];
+			const FVector PrevDir = CornerPoint - PrevPoint;
+			const FVector NextDir = NextPoint - CornerPoint;
+			const double PrevLength = PrevDir.Length();
+			const double NextLength = NextDir.Length();
+			const FVector PrevDirSafe = PrevDir.GetSafeNormal();
+			const FVector NextDirSafe = NextDir.GetSafeNormal();
+			const float CornerDot = FVector::DotProduct(PrevDirSafe, NextDirSafe);
+			const double MaxTrimByLength = FMath::Min(PrevLength, NextLength) * CornerSmoothingSegmentFraction;
+			const double DesiredTrim = FMath::Max(0.0, static_cast<double>(CornerSmoothingDistance > 0.0f ? CornerSmoothingDistance : AgentRadius * 1.5f));
+			const double CornerTrim = FMath::Min(DesiredTrim, MaxTrimByLength);
+
+			bool bSmoothedCorner = false;
+			if (PrevLength > UE_KINDA_SMALL_NUMBER &&
+				NextLength > UE_KINDA_SMALL_NUMBER &&
+				CornerTrim > UE_KINDA_SMALL_NUMBER &&
+				CornerDot <= CornerSmoothingMaxDot)
+			{
+				const FVector EntryPoint = CornerPoint - PrevDirSafe * CornerTrim;
+				const FVector ExitPoint = CornerPoint + NextDirSafe * CornerTrim;
+				FollowSegment.EndWaypointIndex = AppendWaypointIfNeeded(FollowPathWaypoints, EntryPoint);
+
+				for (int32 SubdivisionIndex = 1; SubdivisionIndex <= CornerSmoothingSubdivisions; ++SubdivisionIndex)
+				{
+					const float T = static_cast<float>(SubdivisionIndex) / static_cast<float>(CornerSmoothingSubdivisions + 1);
+					const FVector CurvePoint = EvaluateQuadraticBezier(EntryPoint, CornerPoint, ExitPoint, T);
+					if (!CurvePoint.Equals(EntryPoint, UE_KINDA_SMALL_NUMBER) &&
+						!CurvePoint.Equals(ExitPoint, UE_KINDA_SMALL_NUMBER))
+					{
+						FollowSegment.EndWaypointIndex = AppendWaypointIfNeeded(FollowPathWaypoints, CurvePoint);
+					}
+				}
+
+				FollowSegment.EndWaypointIndex = AppendWaypointIfNeeded(FollowPathWaypoints, ExitPoint);
+				bSmoothedCorner = true;
+				++SmoothedCornerCount;
+			}
+
+			if (!bSmoothedCorner)
+			{
+				FollowSegment.EndWaypointIndex = AppendWaypointIfNeeded(FollowPathWaypoints, CornerPoint);
+			}
+		}
+
+		FollowSegment.EndWaypointIndex = AppendWaypointIfNeeded(FollowPathWaypoints, SourceWaypoints[SourceSegment.EndWaypointIndex]);
+		FollowPathSegments.Add(FollowSegment);
+
+		if (bLogPathRequests && SmoothedCornerCount > 0)
+		{
+			UE_LOG(
+				LogMobileSurfaceNavAgent,
+				Log,
+				TEXT("%s smoothed walk segment: sourceWp=%d followWp=%d corners=%d"),
+				*GetNameSafe(GetOwner()),
+				SourceSegment.EndWaypointIndex - SourceSegment.StartWaypointIndex + 1,
+				FollowSegment.EndWaypointIndex - FollowSegment.StartWaypointIndex + 1,
+				SmoothedCornerCount);
+		}
+	}
+
+	if (FollowPathSegments.IsEmpty())
+	{
+		FollowPathWaypoints = SourceWaypoints;
+		FollowPathSegments = SourceSegments;
+	}
+
+	for (int32 WaypointIndex = 0; WaypointIndex + 1 < FollowPathWaypoints.Num(); ++WaypointIndex)
+	{
+		FollowPathEstimatedLength += FVector::Distance(FollowPathWaypoints[WaypointIndex], FollowPathWaypoints[WaypointIndex + 1]);
+	}
+}
+
+void UMobileSurfaceNavAgentComponent::UpdateFacing(const float DeltaTime)
+{
+	if (!bEnableSmoothRotation || MaxTurnRateDegreesPerSecond <= 0.0f)
+	{
+		return;
+	}
+
+	AActor* Owner = GetOwner();
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
+	if (!Owner || !SpaceComponent)
+	{
+		return;
+	}
+
+	const TArray<FVector>& ActiveWaypoints = GetActivePathWaypoints();
+	if (!ActiveWaypoints.IsValidIndex(CurrentWaypointIndex))
+	{
+		bHasLastFacingTargetWorld = false;
+		return;
+	}
+
+	const FVector CurrentLocal = bHasCachedNavigationLocalPosition
+		? CachedNavigationLocalPosition
+		: SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
+	FVector DesiredTargetLocal = ActiveWaypoints[CurrentWaypointIndex];
+	double RemainingLookAhead = RotationLookAheadDistance;
+	FVector SegmentStartLocal = CurrentLocal;
+	for (int32 LookAheadIndex = CurrentWaypointIndex; LookAheadIndex < ActiveWaypoints.Num(); ++LookAheadIndex)
+	{
+		const FVector SegmentEndLocal = ActiveWaypoints[LookAheadIndex];
+		const FVector Segment = SegmentEndLocal - SegmentStartLocal;
+		const double SegmentLength = Segment.Length();
+		if (SegmentLength > UE_KINDA_SMALL_NUMBER)
+		{
+			if (RemainingLookAhead <= SegmentLength)
+			{
+				DesiredTargetLocal = SegmentStartLocal + Segment.GetSafeNormal() * RemainingLookAhead;
+				break;
+			}
+
+			RemainingLookAhead -= SegmentLength;
+			DesiredTargetLocal = SegmentEndLocal;
+		}
+
+		SegmentStartLocal = SegmentEndLocal;
+	}
+
+	const FVector DesiredLocalDirection = DesiredTargetLocal - CurrentLocal;
+	if (DesiredLocalDirection.SizeSquared() < FMath::Square(RotationMinDirectionDistance))
+	{
+		return;
+	}
+
+	const FVector DesiredWorldTarget = SpaceComponent->GetComponentTransform().TransformPosition(DesiredTargetLocal);
+	FVector DesiredWorldDirection = DesiredWorldTarget - Owner->GetActorLocation();
+	if (bHasLastFacingTargetWorld)
+	{
+		const FVector SmoothedTargetWorld = FMath::VInterpTo(LastFacingTargetWorld, DesiredWorldTarget, DeltaTime, 10.0f);
+		LastFacingTargetWorld = SmoothedTargetWorld;
+		DesiredWorldDirection = SmoothedTargetWorld - Owner->GetActorLocation();
+	}
+	else
+	{
+		LastFacingTargetWorld = DesiredWorldTarget;
+		bHasLastFacingTargetWorld = true;
+	}
+
+	if (DesiredWorldDirection.IsNearlyZero())
+	{
+		return;
+	}
+
+	const float DesiredYaw = DesiredWorldDirection.Rotation().Yaw;
+	const FRotator CurrentRotation = Owner->GetActorRotation();
+	const float MaxYawStep = MaxTurnRateDegreesPerSecond * DeltaTime;
+	const float DeltaYaw = FMath::FindDeltaAngleDegrees(CurrentRotation.Yaw, DesiredYaw);
+	const float NewYaw = CurrentRotation.Yaw + FMath::Clamp(DeltaYaw, -MaxYawStep, MaxYawStep);
+	Owner->SetActorRotation(FRotator(0.0f, NewYaw, 0.0f));
 }
 
 bool UMobileSurfaceNavAgentComponent::RequestMoveToLocal(const FVector& TargetLocalPosition)
@@ -199,11 +439,12 @@ bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(
 
 	ResetActiveSpecialLinkState();
 	CurrentPath = NewPath;
+	RebuildFollowPath();
 	ClearPendingPathRequest();
 	ObservedRuntimeStateRevision = CurrentPath.RuntimeStateRevision;
 	bWaitingForNavigationChange = false;
 	CurrentSegmentIndex = 0;
-	CurrentWaypointIndex = CurrentPath.Waypoints.Num() > 1 ? 1 : 0;
+	CurrentWaypointIndex = GetActivePathWaypoints().Num() > 1 ? 1 : 0;
 	AgentState = CurrentPath.Segments.IsEmpty() ? EMobileSurfaceNavAgentState::Moving : EMobileSurfaceNavAgentState::Moving;
 	LastProgressWaypointIndex = CurrentWaypointIndex;
 	LastProgressWorldPosition = Owner->GetActorLocation();
@@ -213,6 +454,7 @@ bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(
 		? CurrentPath.Waypoints[0]
 		: CurrentLocal;
 	bHasCachedNavigationLocalPosition = true;
+	bHasLastFacingTargetWorld = false;
 	SyncOwnerToCachedNavigationLocalPosition();
 	if (bLogPathRequests)
 	{
@@ -280,11 +522,12 @@ bool UMobileSurfaceNavAgentComponent::PollPendingPathRequest()
 
 	ResetActiveSpecialLinkState();
 	CurrentPath = Path;
+	RebuildFollowPath();
 	bPendingPathPreservesCurrentPath = false;
 	ObservedRuntimeStateRevision = CurrentPath.RuntimeStateRevision;
 	bWaitingForNavigationChange = false;
 	CurrentSegmentIndex = 0;
-	CurrentWaypointIndex = CurrentPath.Waypoints.Num() > 1 ? 1 : 0;
+	CurrentWaypointIndex = GetActivePathWaypoints().Num() > 1 ? 1 : 0;
 	AgentState = EMobileSurfaceNavAgentState::Moving;
 	LastProgressWaypointIndex = CurrentWaypointIndex;
 	LastProgressWorldPosition = GetOwner() ? GetOwner()->GetActorLocation() : FVector::ZeroVector;
@@ -296,6 +539,7 @@ bool UMobileSurfaceNavAgentComponent::PollPendingPathRequest()
 			? CurrentPath.Waypoints[0]
 			: NavigationComponent->GetOwner()->GetRootComponent()->GetComponentTransform().InverseTransformPosition(GetOwner()->GetActorLocation());
 		bHasCachedNavigationLocalPosition = true;
+		bHasLastFacingTargetWorld = false;
 		SyncOwnerToCachedNavigationLocalPosition();
 	}
 	if (bLogPathRequests)
@@ -335,6 +579,9 @@ void UMobileSurfaceNavAgentComponent::ClearCurrentPath()
 {
 	ResetActiveSpecialLinkState();
 	CurrentPath = FMobileSurfaceNavPath();
+	FollowPathWaypoints.Reset();
+	FollowPathSegments.Reset();
+	FollowPathEstimatedLength = 0.0f;
 	CurrentSegmentIndex = 0;
 	CurrentWaypointIndex = 0;
 	LastProgressWaypointIndex = INDEX_NONE;
@@ -342,6 +589,7 @@ void UMobileSurfaceNavAgentComponent::ClearCurrentPath()
 	StuckCheckTimer = 0.0f;
 	AgentState = EMobileSurfaceNavAgentState::Idle;
 	bHasCachedNavigationLocalPosition = false;
+	bHasLastFacingTargetWorld = false;
 }
 
 bool UMobileSurfaceNavAgentComponent::RepathToActiveTarget(const bool bPreserveCurrentPathUntilSuccess)
@@ -671,14 +919,46 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 		{
 			const FVector Start = LocalToWorld.TransformPosition(CurrentPath.Waypoints[WaypointIndex]);
 			const FVector End = LocalToWorld.TransformPosition(CurrentPath.Waypoints[WaypointIndex + 1]);
-			DrawDebugLine(World, Start, End, FColor::Red, false, Duration, DepthPriority, 6.0f);
-			DrawDebugPoint(World, Start, 16.0f, WaypointIndex == 0 ? FColor::Green : FColor::Red, false, Duration, DepthPriority);
+			DrawDebugLine(World, Start, End, FColor::Red, false, Duration, DepthPriority, 4.0f);
+			DrawDebugPoint(World, Start, 14.0f, WaypointIndex == 0 ? FColor::Green : FColor::Red, false, Duration, DepthPriority);
 			if (bDrawCurrentPathTriangleLabels)
 			{
 				DrawDebugString(World, Start + FVector(0.0, 0.0, 24.0f), FString::Printf(TEXT("W%d"), WaypointIndex), nullptr, FColor::Red, Duration, false, 1.0f);
 			}
 		}
-		DrawDebugPoint(World, LocalToWorld.TransformPosition(CurrentPath.Waypoints.Last()), 16.0f, FColor::Red, false, Duration, DepthPriority);
+		DrawDebugPoint(World, LocalToWorld.TransformPosition(CurrentPath.Waypoints.Last()), 14.0f, FColor::Red, false, Duration, DepthPriority);
+	}
+
+	if (bDrawSmoothedPathDebug && FollowPathWaypoints.Num() >= 2)
+	{
+		for (int32 WaypointIndex = 0; WaypointIndex + 1 < FollowPathWaypoints.Num(); ++WaypointIndex)
+		{
+			const FVector Start = LocalToWorld.TransformPosition(FollowPathWaypoints[WaypointIndex]);
+			const FVector End = LocalToWorld.TransformPosition(FollowPathWaypoints[WaypointIndex + 1]);
+			DrawDebugLine(World, Start, End, FColor(0, 255, 180), false, Duration, DepthPriority, 7.0f);
+			DrawDebugPoint(World, Start, 10.0f, WaypointIndex == 0 ? FColor(80, 255, 120) : FColor(0, 255, 180), false, Duration, DepthPriority);
+		}
+		DrawDebugPoint(World, LocalToWorld.TransformPosition(FollowPathWaypoints.Last()), 10.0f, FColor(0, 255, 180), false, Duration, DepthPriority);
+	}
+
+	if (bDrawFacingDebug && GetOwner())
+	{
+		const FVector Start = GetOwner()->GetActorLocation();
+		const FVector Forward = GetOwner()->GetActorForwardVector();
+		DrawDebugDirectionalArrow(World, Start, Start + Forward * FacingDebugLength, 18.0f, FColor::Yellow, false, Duration, DepthPriority, 3.0f);
+		if (bHasLastFacingTargetWorld)
+		{
+			DrawDebugLine(
+				World,
+				Start,
+				LastFacingTargetWorld,
+				FColor(255, 220, 80),
+				false,
+				Duration,
+				DepthPriority,
+				2.0f);
+			DrawDebugPoint(World, LastFacingTargetWorld, 10.0f, FColor(255, 220, 80), false, Duration, DepthPriority);
+		}
 	}
 
 	if (GetOwner())
@@ -686,7 +966,7 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 		DrawDebugString(
 			World,
 			GetOwner()->GetActorLocation() + FVector(0.0, 0.0, AgentRadius + 40.0f),
-			FString::Printf(TEXT("%s Seg=%d Wp=%d"), LexAgentStateText(AgentState), CurrentSegmentIndex, CurrentWaypointIndex),
+			FString::Printf(TEXT("%s Seg=%d Wp=%d Len=%.1f"), LexAgentStateText(AgentState), CurrentSegmentIndex, CurrentWaypointIndex, FollowPathEstimatedLength > 0.0f ? FollowPathEstimatedLength : CurrentPath.EstimatedLength),
 			nullptr,
 			FColor::White,
 			Duration,
@@ -697,9 +977,10 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 
 void UMobileSurfaceNavAgentComponent::AdvanceBeyondCurrentSegmentOrComplete()
 {
-	if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
+	const TArray<FMobileSurfaceNavPathSegment>& ActiveSegments = GetActivePathSegments();
+	if (ActiveSegments.IsValidIndex(CurrentSegmentIndex))
 	{
-		const FMobileSurfaceNavPathSegment& NextSegment = CurrentPath.Segments[CurrentSegmentIndex];
+		const FMobileSurfaceNavPathSegment& NextSegment = ActiveSegments[CurrentSegmentIndex];
 		if (NextSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk)
 		{
 			CurrentWaypointIndex = FMath::Max(CurrentWaypointIndex + 1, NextSegment.StartWaypointIndex + 1);
@@ -812,9 +1093,11 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 		return;
 	}
 
-	if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
+	const TArray<FVector>& ActiveWaypoints = GetActivePathWaypoints();
+	const TArray<FMobileSurfaceNavPathSegment>& ActiveSegments = GetActivePathSegments();
+	if (ActiveSegments.IsValidIndex(CurrentSegmentIndex))
 	{
-		const FMobileSurfaceNavPathSegment& CurrentSegment = CurrentPath.Segments[CurrentSegmentIndex];
+		const FMobileSurfaceNavPathSegment& CurrentSegment = ActiveSegments[CurrentSegmentIndex];
 		if (CurrentSegment.SegmentType != EMobileSurfaceNavPathSegmentType::Walk)
 		{
 			if (AgentState == EMobileSurfaceNavAgentState::Moving)
@@ -834,7 +1117,7 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 		}
 	}
 
-	if (CurrentWaypointIndex >= CurrentPath.Waypoints.Num() || !CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
+	if (CurrentWaypointIndex >= ActiveWaypoints.Num() || !ActiveSegments.IsValidIndex(CurrentSegmentIndex))
 	{
 		HandleMoveCompleted();
 		return;
@@ -849,7 +1132,7 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 	const FVector CurrentLocal = bHasCachedNavigationLocalPosition
 		? CachedNavigationLocalPosition
 		: SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
-	const FVector TargetLocal = CurrentPath.Waypoints[CurrentWaypointIndex];
+	const FVector TargetLocal = ActiveWaypoints[CurrentWaypointIndex];
 	const FVector ToTarget = TargetLocal - CurrentLocal;
 	const double DistanceToTarget = ToTarget.Length();
 	const float MaxTravelThisTick = MoveSpeed * DeltaTime;
@@ -865,20 +1148,21 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 		LastProgressWorldPosition = Owner->GetActorLocation();
 		SameWaypointStuckChecks = 0;
 		StuckCheckTimer = 0.0f;
-		if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex) &&
-			CurrentWaypointIndex > CurrentPath.Segments[CurrentSegmentIndex].EndWaypointIndex)
+		if (ActiveSegments.IsValidIndex(CurrentSegmentIndex) &&
+			CurrentWaypointIndex > ActiveSegments[CurrentSegmentIndex].EndWaypointIndex)
 		{
 			++CurrentSegmentIndex;
-			if (!CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
+			if (!ActiveSegments.IsValidIndex(CurrentSegmentIndex))
 			{
 				HandleMoveCompleted();
 				return;
 			}
 		}
-		if (CurrentWaypointIndex >= CurrentPath.Waypoints.Num())
+		if (CurrentWaypointIndex >= ActiveWaypoints.Num())
 		{
 			HandleMoveCompleted();
 		}
+		UpdateFacing(DeltaTime);
 		return;
 	}
 
@@ -886,6 +1170,7 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 	CachedNavigationLocalPosition = CurrentLocal + Step.GetClampedToMaxSize(DistanceToTarget);
 	bHasCachedNavigationLocalPosition = true;
 	SyncOwnerToCachedNavigationLocalPosition();
+	UpdateFacing(DeltaTime);
 
 	if (bEnableStuckRecovery && bHasActiveTarget)
 	{
