@@ -344,12 +344,6 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
 	float DebugLayerVerticalSpacing = 40.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
-	bool bDrawBuildDebugData = false;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
-	int32 DebugBuildRegionId = INDEX_NONE;
-
 	UPROPERTY(BlueprintReadOnly, Category = "Mobile Surface Navigation", Transient, meta = (AllowPrivateAccess = "true"))
 	FMobileSurfaceNavData NavigationData;
 

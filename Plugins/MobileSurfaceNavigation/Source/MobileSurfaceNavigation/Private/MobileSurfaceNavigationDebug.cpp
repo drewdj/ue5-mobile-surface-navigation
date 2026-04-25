@@ -48,30 +48,6 @@ namespace MobileSurfaceNavigation::Debug
 		return FColor::Green;
 	}
 
-	static FColor GetBuildDebugSegmentColor(const EMobileSurfaceNavBuildDebugSegmentType SegmentType)
-	{
-		switch (SegmentType)
-		{
-		case EMobileSurfaceNavBuildDebugSegmentType::PhysicalBoundary:
-			return FColor::Red;
-		case EMobileSurfaceNavBuildDebugSegmentType::RegionSeam:
-			return FColor::Cyan;
-		default:
-			return FColor::White;
-		}
-	}
-
-	static FColor GetBuildDebugLoopColor(
-		const EMobileSurfaceNavBuildDebugLoopType LoopType,
-		const EMobileSurfaceBoundaryKind BoundaryKind)
-	{
-		if (LoopType == EMobileSurfaceNavBuildDebugLoopType::Original)
-		{
-			return BoundaryKind == EMobileSurfaceBoundaryKind::Hole ? FColor(255, 170, 0) : FColor(0, 220, 120);
-		}
-
-		return BoundaryKind == EMobileSurfaceBoundaryKind::Hole ? FColor(255, 90, 255) : FColor(255, 255, 0);
-	}
 }
 
 void FMobileSurfaceNavigationDebug::DrawNavData(
@@ -133,72 +109,6 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 				const FVector End = LocalToWorld.TransformPosition(NavData.Vertices[Loop.VertexIndices[VertexIndex + 1]].LocalPosition) + Settings.WorldOffset;
 				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.0f);
 			}
-		}
-	}
-
-	if (Settings.bDrawBuildDebugData)
-	{
-		for (const FMobileSurfaceNavBuildDebugSegment& Segment : NavData.BuildDebugSegments)
-		{
-			if (Settings.BuildDebugRegionId != INDEX_NONE && Segment.RegionId != Settings.BuildDebugRegionId)
-			{
-				continue;
-			}
-
-			const FVector Start = LocalToWorld.TransformPosition(Segment.StartLocalPosition) + Settings.WorldOffset;
-			const FVector End = LocalToWorld.TransformPosition(Segment.EndLocalPosition) + Settings.WorldOffset;
-			DrawDebugLine(
-				World,
-				Start,
-				End,
-				MobileSurfaceNavigation::Debug::GetBuildDebugSegmentColor(Segment.SegmentType),
-				false,
-				Settings.Duration,
-				DepthPriority,
-				Settings.LineThickness * 3.0f);
-		}
-
-		for (const FMobileSurfaceNavBuildDebugLoop& Loop : NavData.BuildDebugLoops)
-		{
-			if (Settings.BuildDebugRegionId != INDEX_NONE && Loop.RegionId != Settings.BuildDebugRegionId)
-			{
-				continue;
-			}
-
-			if (Loop.LocalPoints.Num() < 2)
-			{
-				continue;
-			}
-
-			const FColor LoopColor = MobileSurfaceNavigation::Debug::GetBuildDebugLoopColor(Loop.LoopType, Loop.Kind);
-			for (int32 PointIndex = 0; PointIndex + 1 < Loop.LocalPoints.Num(); ++PointIndex)
-			{
-				const FVector Start = LocalToWorld.TransformPosition(Loop.LocalPoints[PointIndex]) + Settings.WorldOffset;
-				const FVector End = LocalToWorld.TransformPosition(Loop.LocalPoints[PointIndex + 1]) + Settings.WorldOffset;
-				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.5f);
-			}
-
-			if (Loop.bClosed)
-			{
-				const FVector Start = LocalToWorld.TransformPosition(Loop.LocalPoints.Last()) + Settings.WorldOffset;
-				const FVector End = LocalToWorld.TransformPosition(Loop.LocalPoints[0]) + Settings.WorldOffset;
-				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.5f);
-			}
-
-			const FString Label = FString::Printf(
-				TEXT("R%d %s %s"),
-				Loop.RegionId,
-				Loop.LoopType == EMobileSurfaceNavBuildDebugLoopType::Inset ? TEXT("Inset") : TEXT("Original"),
-				Loop.Kind == EMobileSurfaceBoundaryKind::Hole ? TEXT("Hole") : TEXT("Outer"));
-			DrawDebugString(
-				World,
-				LocalToWorld.TransformPosition(Loop.LocalPoints[0]) + Settings.WorldOffset + FVector(0.0f, 0.0f, 20.0f),
-				Label,
-				nullptr,
-				LoopColor,
-				Settings.Duration,
-				false,
-				1.0f);
 		}
 	}
 

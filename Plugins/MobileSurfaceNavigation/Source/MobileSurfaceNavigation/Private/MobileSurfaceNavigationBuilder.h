@@ -23,4 +23,10 @@ public:
 		const FMobileSurfaceNavBuildSettings& Settings,
 		FMobileSurfaceNavData& OutNavData,
 		FString& OutError);
+
+	static bool BuildAgentRadiusLayer(
+		const FMobileSurfaceNavData& SourceNavData,
+		float AgentRadius,
+		FMobileSurfaceNavData& OutNavData,
+		FString& OutError);
 };

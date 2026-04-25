@@ -47,20 +47,6 @@ enum class EMobileSurfaceNavAgentState : uint8
 	WaitingForElevator = 4
 };
 
-UENUM(BlueprintType)
-enum class EMobileSurfaceNavBuildDebugSegmentType : uint8
-{
-	PhysicalBoundary = 0,
-	RegionSeam = 1
-};
-
-UENUM(BlueprintType)
-enum class EMobileSurfaceNavBuildDebugLoopType : uint8
-{
-	Original = 0,
-	Inset = 1
-};
-
 USTRUCT(BlueprintType)
 struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavVertex
 {
@@ -121,45 +107,6 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavBoundaryLoop
 	EMobileSurfaceBoundaryKind Kind = EMobileSurfaceBoundaryKind::Unknown;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
-	bool bClosed = false;
-};
-
-USTRUCT(BlueprintType)
-struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavBuildDebugSegment
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	FVector StartLocalPosition = FVector::ZeroVector;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	FVector EndLocalPosition = FVector::ZeroVector;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	int32 RegionId = INDEX_NONE;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	EMobileSurfaceNavBuildDebugSegmentType SegmentType = EMobileSurfaceNavBuildDebugSegmentType::PhysicalBoundary;
-};
-
-USTRUCT(BlueprintType)
-struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavBuildDebugLoop
-{
-	GENERATED_BODY()
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	TArray<FVector> LocalPoints;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	int32 RegionId = INDEX_NONE;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	EMobileSurfaceBoundaryKind Kind = EMobileSurfaceBoundaryKind::Unknown;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	EMobileSurfaceNavBuildDebugLoopType LoopType = EMobileSurfaceNavBuildDebugLoopType::Original;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
 	bool bClosed = false;
 };
 
@@ -427,12 +374,6 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceTriangleBounds> TriangleBounds;
 
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	TArray<FMobileSurfaceNavBuildDebugSegment> BuildDebugSegments;
-
-	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation|Debug")
-	TArray<FMobileSurfaceNavBuildDebugLoop> BuildDebugLoops;
-
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation")
 	TArray<FMobileSurfaceNavSpecialLink> SpecialLinks;
 
@@ -460,8 +401,6 @@ struct MOBILESURFACENAVIGATION_API FMobileSurfaceNavData
 		PortalRuntimeStates.Reset();
 		TriangleAdjacency.Reset();
 		TriangleBounds.Reset();
-		BuildDebugSegments.Reset();
-		BuildDebugLoops.Reset();
 		SpecialLinks.Reset();
 		LocalBounds = FBox(EForceInit::ForceInit);
 		bIsValid = false;

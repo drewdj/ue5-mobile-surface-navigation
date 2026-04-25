@@ -71,8 +71,11 @@ private:
 	bool CacheCurrentNavigationLocalPosition();
 	bool SyncOwnerToCachedNavigationLocalPosition() const;
 	bool IsBoardedOnActiveElevator() const;
+	const USceneComponent* GetNavigationSpaceComponent() const;
 	void QueueDeferredMoveRequest(const FVector& TargetLocalPosition);
 	void ConsumeDeferredMoveRequest();
+	void DrawCurrentPathDebug() const;
+	void AdvanceBeyondCurrentSegmentOrComplete();
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	TObjectPtr<UMobileSurfaceNavComponent> NavigationComponent = nullptr;
@@ -106,6 +109,12 @@ private:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bLogPathRequests = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawCurrentPathDebug = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawCurrentPathTriangleLabels = false;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Recovery", meta = (AllowPrivateAccess = "true"))
 	bool bEnableStuckRecovery = true;

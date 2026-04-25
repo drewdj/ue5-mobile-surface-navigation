@@ -30,11 +30,6 @@ void UMobileSurfaceNavAgentComponent::InitializeAgent(
 	CacheCurrentNavigationLocalPosition();
 }
 
-static const TCHAR* LexBoolText(const bool bValue)
-{
-	return bValue ? TEXT("true") : TEXT("false");
-}
-
 static const TCHAR* LexAgentStateText(const EMobileSurfaceNavAgentState State)
 {
 	switch (State)
@@ -54,106 +49,9 @@ static const TCHAR* LexAgentStateText(const EMobileSurfaceNavAgentState State)
 	}
 }
 
-static bool ResolveSegmentLinkNodeIndices(
-	const FMobileSurfaceNavPathSegment& Segment,
-	const FMobileSurfaceNavSpecialLink& Link,
-	int32& OutEntryNodeIndex,
-	int32& OutExitNodeIndex)
+static const TCHAR* LexBoolText(const bool bValue)
 {
-	OutEntryNodeIndex = Segment.SpecialLinkEntryNodeIndex;
-	OutExitNodeIndex = Segment.SpecialLinkExitNodeIndex;
-
-	if (OutEntryNodeIndex == INDEX_NONE || OutExitNodeIndex == INDEX_NONE)
-	{
-		OutEntryNodeIndex = 0;
-		OutExitNodeIndex = 1;
-	}
-
-	return OutEntryNodeIndex != OutExitNodeIndex &&
-		Link.GetNodeCount() > 1 &&
-		OutEntryNodeIndex >= 0 &&
-		OutExitNodeIndex >= 0 &&
-		OutEntryNodeIndex < Link.GetNodeCount() &&
-		OutExitNodeIndex < Link.GetNodeCount();
-}
-
-static TArray<FVector> BuildSpecialLinkRouteWorldLocations(
-	const USceneComponent* SpaceComponent,
-	const FMobileSurfaceNavPathSegment& Segment,
-	const FMobileSurfaceNavSpecialLink& Link)
-{
-	TArray<FVector> RouteWorldLocations;
-	if (!SpaceComponent)
-	{
-		return RouteWorldLocations;
-	}
-
-	if (Segment.SpecialLinkTraversalNodeIndices.Num() > 0)
-	{
-		for (const int32 NodeIndex : Segment.SpecialLinkTraversalNodeIndices)
-		{
-			RouteWorldLocations.Add(SpaceComponent->GetComponentTransform().TransformPosition(Link.GetNodeLocalPosition(NodeIndex)));
-		}
-		return RouteWorldLocations;
-	}
-
-	int32 EntryNodeIndex = INDEX_NONE;
-	int32 ExitNodeIndex = INDEX_NONE;
-	if (!ResolveSegmentLinkNodeIndices(Segment, Link, EntryNodeIndex, ExitNodeIndex))
-	{
-		return RouteWorldLocations;
-	}
-
-	RouteWorldLocations.Add(SpaceComponent->GetComponentTransform().TransformPosition(Link.GetNodeLocalPosition(EntryNodeIndex)));
-	RouteWorldLocations.Add(SpaceComponent->GetComponentTransform().TransformPosition(Link.GetNodeLocalPosition(ExitNodeIndex)));
-	return RouteWorldLocations;
-}
-
-static TArray<FVector> BuildSpecialLinkRouteLocalLocations(
-	const FMobileSurfaceNavPathSegment& Segment,
-	const FMobileSurfaceNavSpecialLink& Link)
-{
-	TArray<FVector> RouteLocalLocations;
-
-	if (Segment.SpecialLinkTraversalNodeIndices.Num() > 0)
-	{
-		for (const int32 NodeIndex : Segment.SpecialLinkTraversalNodeIndices)
-		{
-			RouteLocalLocations.Add(Link.GetNodeLocalPosition(NodeIndex));
-		}
-		return RouteLocalLocations;
-	}
-
-	int32 EntryNodeIndex = INDEX_NONE;
-	int32 ExitNodeIndex = INDEX_NONE;
-	if (!ResolveSegmentLinkNodeIndices(Segment, Link, EntryNodeIndex, ExitNodeIndex))
-	{
-		return RouteLocalLocations;
-	}
-
-	RouteLocalLocations.Add(Link.GetNodeLocalPosition(EntryNodeIndex));
-	RouteLocalLocations.Add(Link.GetNodeLocalPosition(ExitNodeIndex));
-	return RouteLocalLocations;
-}
-
-static int32 ResolveSpecialLinkDirectionSign(const FMobileSurfaceNavPathSegment& Segment)
-{
-	if (Segment.SpecialLinkEntryNodeIndex == INDEX_NONE || Segment.SpecialLinkExitNodeIndex == INDEX_NONE)
-	{
-		return 0;
-	}
-
-	if (Segment.SpecialLinkExitNodeIndex > Segment.SpecialLinkEntryNodeIndex)
-	{
-		return 1;
-	}
-
-	if (Segment.SpecialLinkExitNodeIndex < Segment.SpecialLinkEntryNodeIndex)
-	{
-		return -1;
-	}
-
-	return 0;
+	return bValue ? TEXT("true") : TEXT("false");
 }
 
 bool UMobileSurfaceNavAgentComponent::RequestMoveToLocal(const FVector& TargetLocalPosition)
@@ -193,7 +91,7 @@ bool UMobileSurfaceNavAgentComponent::RequestMoveToLocalInternal(
 	}
 
 	const AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
 	if (!Owner || !SpaceComponent)
 	{
 		bHasActiveTarget = false;
@@ -271,7 +169,7 @@ bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(
 	}
 
 	const AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
 	if (!Owner || !SpaceComponent)
 	{
 		return false;
@@ -444,7 +342,6 @@ void UMobileSurfaceNavAgentComponent::ClearCurrentPath()
 	StuckCheckTimer = 0.0f;
 	AgentState = EMobileSurfaceNavAgentState::Idle;
 	bHasCachedNavigationLocalPosition = false;
-	LastDebugPathTriangleIndex = INDEX_NONE;
 }
 
 bool UMobileSurfaceNavAgentComponent::RepathToActiveTarget(const bool bPreserveCurrentPathUntilSuccess)
@@ -543,535 +440,6 @@ void UMobileSurfaceNavAgentComponent::SetRandomPathDelay(const float InRandomPat
 	RandomPathDelay = FMath::Max(0.0f, InRandomPathDelay);
 }
 
-bool UMobileSurfaceNavAgentComponent::BeginCurrentSpecialLink()
-{
-	if (!CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-	{
-		return false;
-	}
-
-	const FMobileSurfaceNavPathSegment& Segment = CurrentPath.Segments[CurrentSegmentIndex];
-	if (!NavigationComponent)
-	{
-		return false;
-	}
-
-	if (Segment.SegmentType == EMobileSurfaceNavPathSegmentType::Elevator)
-	{
-		if (!NavigationComponent->GetNavigationData().SpecialLinks.IsValidIndex(Segment.SpecialLinkIndex))
-		{
-			if (bLogPathRequests)
-			{
-				UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator segment has invalid special link index=%d"),
-					*GetNameSafe(GetOwner()),
-					Segment.SpecialLinkIndex);
-			}
-			AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-			return false;
-		}
-
-		const FMobileSurfaceNavSpecialLink& Link = NavigationComponent->GetNavigationData().SpecialLinks[Segment.SpecialLinkIndex];
-		if (bLogPathRequests)
-		{
-			UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s begin elevator segment: linkIndex=%d linkId=%s actor=%s entryNode=%d exitNode=%d startWp=%d endWp=%d"),
-				*GetNameSafe(GetOwner()),
-				Segment.SpecialLinkIndex,
-				*Link.LinkId.ToString(),
-				*GetNameSafe(Link.ElevatorActor.Get()),
-				Segment.SpecialLinkEntryNodeIndex,
-				Segment.SpecialLinkExitNodeIndex,
-				Segment.StartWaypointIndex,
-				Segment.EndWaypointIndex);
-		}
-
-		if (AMobileSurfaceNavElevator* ElevatorActor = Link.ElevatorActor.Get())
-		{
-			AActor* Owner = GetOwner();
-			const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
-			if (!Owner || !SpaceComponent)
-			{
-				return false;
-			}
-
-			int32 EntryNodeIndex = INDEX_NONE;
-			int32 ExitNodeIndex = INDEX_NONE;
-			if (!ResolveSegmentLinkNodeIndices(Segment, Link, EntryNodeIndex, ExitNodeIndex))
-			{
-				if (bLogPathRequests)
-				{
-					UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator link '%s' has invalid node setup entryNode=%d exitNode=%d"),
-						*GetNameSafe(Owner),
-						*Link.LinkId.ToString(),
-						Segment.SpecialLinkEntryNodeIndex,
-						Segment.SpecialLinkExitNodeIndex);
-				}
-				AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-				return false;
-			}
-
-			if (ActiveElevatorActor.Get() != ElevatorActor)
-			{
-				ResetActiveSpecialLinkState();
-				ActiveElevatorActor = ElevatorActor;
-			}
-
-			if (!bElevatorBoardingRequested)
-			{
-				const FVector EntryWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.StartWaypointIndex]);
-				const FVector ExitWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.EndWaypointIndex]);
-				const TArray<FVector> RouteWorldLocations = BuildSpecialLinkRouteWorldLocations(SpaceComponent, Segment, Link);
-				if (bLogPathRequests)
-				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s requesting elevator boarding: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s"),
-						*GetNameSafe(Owner),
-						*GetNameSafe(ElevatorActor),
-						EntryNodeIndex,
-						ExitNodeIndex,
-						*EntryWorld.ToCompactString(),
-						*ExitWorld.ToCompactString());
-				}
-				if (!ElevatorActor->RequestBoardingWithRoute(Owner, RouteWorldLocations))
-				{
-					if (bLogPathRequests)
-					{
-						UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator boarding request rejected by %s"),
-							*GetNameSafe(Owner),
-							*GetNameSafe(ElevatorActor));
-					}
-					return false;
-				}
-				bElevatorBoardingRequested = true;
-			}
-
-			AgentState = ElevatorActor->IsAgentBoarded(Owner)
-				? EMobileSurfaceNavAgentState::UsingSpecialLink
-				: EMobileSurfaceNavAgentState::WaitingForElevator;
-			if (bLogPathRequests)
-			{
-				UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s elevator state after begin: %s"),
-					*GetNameSafe(Owner),
-					LexAgentStateText(AgentState));
-			}
-			return true;
-		}
-
-		if (bLogPathRequests)
-		{
-			UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator link '%s' has no ElevatorActor assigned"),
-				*GetNameSafe(GetOwner()),
-				*Link.LinkId.ToString());
-		}
-		AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-		return false;
-	}
-
-	if (Segment.SegmentType == EMobileSurfaceNavPathSegmentType::Ladder)
-	{
-		if (!NavigationComponent->GetNavigationData().SpecialLinks.IsValidIndex(Segment.SpecialLinkIndex))
-		{
-			return false;
-		}
-
-		const FMobileSurfaceNavSpecialLink& Link = NavigationComponent->GetNavigationData().SpecialLinks[Segment.SpecialLinkIndex];
-		return TryBeginLadderTraversal(Segment, Link);
-	}
-
-	AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-	return true;
-}
-
-bool UMobileSurfaceNavAgentComponent::TickCurrentSpecialLink(const float DeltaTime)
-{
-	AActor* Owner = GetOwner();
-	if (!Owner || !NavigationComponent || !CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-	{
-		return false;
-	}
-
-	const FMobileSurfaceNavPathSegment& Segment = CurrentPath.Segments[CurrentSegmentIndex];
-	if (!CurrentPath.Waypoints.IsValidIndex(Segment.EndWaypointIndex))
-	{
-		return false;
-	}
-
-	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
-	if (!SpaceComponent)
-	{
-		return false;
-	}
-
-	if (Segment.SegmentType == EMobileSurfaceNavPathSegmentType::Elevator)
-	{
-		if (!NavigationComponent->GetNavigationData().SpecialLinks.IsValidIndex(Segment.SpecialLinkIndex))
-		{
-			AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-			return true;
-		}
-
-		const FMobileSurfaceNavSpecialLink& Link = NavigationComponent->GetNavigationData().SpecialLinks[Segment.SpecialLinkIndex];
-		if (AMobileSurfaceNavElevator* ElevatorActor = Link.ElevatorActor.Get())
-		{
-			const FVector TargetWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.EndWaypointIndex]);
-			int32 EntryNodeIndex = INDEX_NONE;
-			int32 ExitNodeIndex = INDEX_NONE;
-			if (!ResolveSegmentLinkNodeIndices(Segment, Link, EntryNodeIndex, ExitNodeIndex))
-			{
-				AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-				return true;
-			}
-
-			if (!bElevatorBoardingRequested || ActiveElevatorActor.Get() != ElevatorActor)
-			{
-				ActiveElevatorActor = ElevatorActor;
-				const FVector EntryWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.StartWaypointIndex]);
-				const FVector ExitWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.EndWaypointIndex]);
-				const TArray<FVector> RouteWorldLocations = BuildSpecialLinkRouteWorldLocations(SpaceComponent, Segment, Link);
-				if (bLogPathRequests)
-				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s refresh elevator boarding request: elevator=%s entryNode=%d exitNode=%d entry=%s exit=%s requested=%s"),
-						*GetNameSafe(Owner),
-						*GetNameSafe(ElevatorActor),
-						EntryNodeIndex,
-						ExitNodeIndex,
-						*EntryWorld.ToCompactString(),
-						*ExitWorld.ToCompactString(),
-						LexBoolText(bElevatorBoardingRequested));
-				}
-				if (!ElevatorActor->RequestBoardingWithRoute(Owner, RouteWorldLocations))
-				{
-					if (bLogPathRequests)
-					{
-						UE_LOG(LogMobileSurfaceNavAgent, Warning, TEXT("%s elevator refresh request rejected by %s"),
-							*GetNameSafe(Owner),
-							*GetNameSafe(ElevatorActor));
-					}
-					AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-					return true;
-				}
-				bElevatorBoardingRequested = true;
-			}
-
-			FVector RideWorldLocation = FVector::ZeroVector;
-			if (ElevatorActor->IsTraversalComplete(Owner))
-			{
-				if (bLogPathRequests)
-				{
-					UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s elevator traversal complete on %s"),
-						*GetNameSafe(Owner),
-						*GetNameSafe(ElevatorActor));
-				}
-				Owner->SetActorLocation(TargetWorld);
-				CacheCurrentNavigationLocalPosition();
-				ElevatorActor->FinishTraversal(Owner);
-				ActiveElevatorActor.Reset();
-				bElevatorBoardingRequested = false;
-				CurrentWaypointIndex = Segment.EndWaypointIndex;
-				++CurrentSegmentIndex;
-				AgentState = EMobileSurfaceNavAgentState::Moving;
-				if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-				{
-					const FMobileSurfaceNavPathSegment& NextSegment = CurrentPath.Segments[CurrentSegmentIndex];
-					if (NextSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk)
-					{
-						CurrentWaypointIndex = FMath::Max(CurrentWaypointIndex + 1, NextSegment.StartWaypointIndex + 1);
-					}
-				}
-				else
-				{
-					HandleMoveCompleted();
-				}
-
-				if (bHasDeferredMoveRequest)
-				{
-					ConsumeDeferredMoveRequest();
-				}
-				return true;
-			}
-
-			if (ElevatorActor->GetAgentRideWorldLocation(Owner, RideWorldLocation))
-			{
-				if (bLogPathRequests)
-				{
-					UE_LOG(LogMobileSurfaceNavAgent, Verbose, TEXT("%s riding elevator %s at %s"),
-						*GetNameSafe(Owner),
-						*GetNameSafe(ElevatorActor),
-						*RideWorldLocation.ToCompactString());
-				}
-				Owner->SetActorLocation(RideWorldLocation);
-				AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-				return true;
-			}
-
-			const FVector EntryWorld = SpaceComponent->GetComponentTransform().TransformPosition(CurrentPath.Waypoints[Segment.StartWaypointIndex]);
-			if (FVector::DistSquared(Owner->GetActorLocation(), EntryWorld) > FMath::Square(AcceptanceRadius))
-			{
-				const FVector ToEntry = EntryWorld - Owner->GetActorLocation();
-				const double DistanceToEntry = ToEntry.Length();
-				const FVector StepToEntry = ToEntry.GetSafeNormal() * MoveSpeed * DeltaTime;
-				Owner->SetActorLocation(Owner->GetActorLocation() + StepToEntry.GetClampedToMaxSize(DistanceToEntry));
-			}
-			if (bLogPathRequests)
-			{
-				UE_LOG(LogMobileSurfaceNavAgent, Verbose, TEXT("%s waiting for elevator %s near entry=%s current=%s"),
-					*GetNameSafe(Owner),
-					*GetNameSafe(ElevatorActor),
-					*EntryWorld.ToCompactString(),
-					*Owner->GetActorLocation().ToCompactString());
-			}
-			AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-			return true;
-		}
-
-		AgentState = EMobileSurfaceNavAgentState::WaitingForElevator;
-		return true;
-	}
-
-	if (Segment.SegmentType == EMobileSurfaceNavPathSegmentType::Ladder)
-	{
-		if (!NavigationComponent->GetNavigationData().SpecialLinks.IsValidIndex(Segment.SpecialLinkIndex))
-		{
-			return false;
-		}
-
-		const FMobileSurfaceNavSpecialLink& Link = NavigationComponent->GetNavigationData().SpecialLinks[Segment.SpecialLinkIndex];
-		return TickCurrentLadderTraversal(Segment, Link, DeltaTime);
-	}
-
-	AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-
-	const FVector CurrentLocal = bHasCachedNavigationLocalPosition
-		? CachedNavigationLocalPosition
-		: SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
-	const FVector TargetLocal = CurrentPath.Waypoints[Segment.EndWaypointIndex];
-	const FVector ToTarget = TargetLocal - CurrentLocal;
-	const double DistanceToTarget = ToTarget.Length();
-	const float TraversalSpeed = GetSpecialLinkTraversalSpeed(Segment);
-	const float MaxTravelThisTick = TraversalSpeed * DeltaTime;
-	const double SnapDistance = FMath::Max(static_cast<double>(PositionSnapTolerance), static_cast<double>(MaxTravelThisTick));
-
-	if (DistanceToTarget <= SnapDistance)
-	{
-		CachedNavigationLocalPosition = TargetLocal;
-		bHasCachedNavigationLocalPosition = true;
-		SyncOwnerToCachedNavigationLocalPosition();
-		CurrentWaypointIndex = Segment.EndWaypointIndex;
-		++CurrentSegmentIndex;
-		AgentState = EMobileSurfaceNavAgentState::Moving;
-		if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-		{
-			const FMobileSurfaceNavPathSegment& NextSegment = CurrentPath.Segments[CurrentSegmentIndex];
-			if (NextSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk)
-			{
-				CurrentWaypointIndex = FMath::Max(CurrentWaypointIndex + 1, NextSegment.StartWaypointIndex + 1);
-			}
-		}
-		else
-		{
-			HandleMoveCompleted();
-		}
-		return true;
-	}
-
-	const FVector Step = ToTarget.GetSafeNormal() * MaxTravelThisTick;
-	CachedNavigationLocalPosition = CurrentLocal + Step.GetClampedToMaxSize(DistanceToTarget);
-	bHasCachedNavigationLocalPosition = true;
-	SyncOwnerToCachedNavigationLocalPosition();
-	return true;
-}
-
-bool UMobileSurfaceNavAgentComponent::IsElevatorCurrentlyAvailable(const FMobileSurfaceNavPathSegment& Segment) const
-{
-	if (Segment.SegmentType != EMobileSurfaceNavPathSegmentType::Elevator)
-	{
-		return true;
-	}
-
-	if (ElevatorAvailabilityInterval <= UE_SMALL_NUMBER || ElevatorAvailabilityWindow >= ElevatorAvailabilityInterval)
-	{
-		return true;
-	}
-
-	const UWorld* World = GetWorld();
-	if (!World)
-	{
-		return true;
-	}
-
-	const float CycleTime = FMath::Fmod(World->GetTimeSeconds(), ElevatorAvailabilityInterval);
-	return CycleTime <= ElevatorAvailabilityWindow;
-}
-
-float UMobileSurfaceNavAgentComponent::GetSpecialLinkTraversalSpeed(const FMobileSurfaceNavPathSegment& Segment) const
-{
-	switch (Segment.SegmentType)
-	{
-	case EMobileSurfaceNavPathSegmentType::Ladder:
-		return LadderTraversalSpeed;
-	case EMobileSurfaceNavPathSegmentType::Elevator:
-		return ElevatorTraversalSpeed;
-	case EMobileSurfaceNavPathSegmentType::Jump:
-		return JumpTraversalSpeed;
-	default:
-		return MoveSpeed;
-	}
-}
-
-bool UMobileSurfaceNavAgentComponent::TryBeginLadderTraversal(
-	const FMobileSurfaceNavPathSegment& Segment,
-	const FMobileSurfaceNavSpecialLink& Link)
-{
-	AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent && NavigationComponent->GetOwner()
-		? NavigationComponent->GetOwner()->GetRootComponent()
-		: nullptr;
-	if (!Owner || !NavigationComponent || !SpaceComponent)
-	{
-		return false;
-	}
-
-	if (ActiveLadderLinkIndex != Segment.SpecialLinkIndex)
-	{
-		ActiveSpecialLinkRouteWorldLocations.Reset();
-		ActiveSpecialLinkRouteLocalLocations.Reset();
-		ActiveSpecialLinkRouteTargetIndex = INDEX_NONE;
-		ActiveLadderLinkIndex = INDEX_NONE;
-		ActiveLadderDirectionSign = 0;
-	}
-
-	const int32 DirectionSign = ResolveSpecialLinkDirectionSign(Segment);
-	if (ActiveLadderLinkIndex == INDEX_NONE)
-	{
-		if (!NavigationComponent->TryAcquireLadderTraversal(Segment.SpecialLinkIndex, Owner, DirectionSign))
-		{
-			AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-			return true;
-		}
-
-		ActiveLadderLinkIndex = Segment.SpecialLinkIndex;
-		ActiveLadderDirectionSign = DirectionSign;
-		ActiveSpecialLinkRouteWorldLocations = BuildSpecialLinkRouteWorldLocations(SpaceComponent, Segment, Link);
-		ActiveSpecialLinkRouteLocalLocations = BuildSpecialLinkRouteLocalLocations(Segment, Link);
-		ActiveSpecialLinkRouteTargetIndex = 0;
-		const FVector CurrentLocal = bHasCachedNavigationLocalPosition
-			? CachedNavigationLocalPosition
-			: SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
-		while (ActiveSpecialLinkRouteLocalLocations.IsValidIndex(ActiveSpecialLinkRouteTargetIndex) &&
-			FVector::DistSquared(CurrentLocal, ActiveSpecialLinkRouteLocalLocations[ActiveSpecialLinkRouteTargetIndex]) <= FMath::Square(AcceptanceRadius))
-		{
-			++ActiveSpecialLinkRouteTargetIndex;
-		}
-	}
-
-	AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-	return true;
-}
-
-bool UMobileSurfaceNavAgentComponent::TickCurrentLadderTraversal(
-	const FMobileSurfaceNavPathSegment& Segment,
-	const FMobileSurfaceNavSpecialLink& Link,
-	const float DeltaTime)
-{
-	AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent && NavigationComponent->GetOwner()
-		? NavigationComponent->GetOwner()->GetRootComponent()
-		: nullptr;
-	if (!Owner || !NavigationComponent || !SpaceComponent)
-	{
-		return false;
-	}
-
-	if (ActiveLadderLinkIndex != Segment.SpecialLinkIndex)
-	{
-		if (!TryBeginLadderTraversal(Segment, Link))
-		{
-			return false;
-		}
-	}
-
-	if (ActiveLadderLinkIndex != Segment.SpecialLinkIndex)
-	{
-		AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-		return true;
-	}
-
-	if (!ActiveSpecialLinkRouteLocalLocations.IsValidIndex(ActiveSpecialLinkRouteTargetIndex))
-	{
-		CompleteCurrentSpecialLinkSegment();
-		return true;
-	}
-
-	const FVector CurrentLocal = bHasCachedNavigationLocalPosition
-		? CachedNavigationLocalPosition
-		: SpaceComponent->GetComponentTransform().InverseTransformPosition(Owner->GetActorLocation());
-	const FVector TargetRouteLocal = ActiveSpecialLinkRouteLocalLocations[ActiveSpecialLinkRouteTargetIndex];
-	const FVector ToTarget = TargetRouteLocal - CurrentLocal;
-	const double DistanceToTarget = ToTarget.Length();
-	const float TraversalSpeed = GetSpecialLinkTraversalSpeed(Segment);
-	const float MaxTravelThisTick = TraversalSpeed * DeltaTime;
-	const double SnapDistance = FMath::Max(static_cast<double>(PositionSnapTolerance), static_cast<double>(MaxTravelThisTick));
-
-	if (DistanceToTarget <= SnapDistance)
-	{
-		CachedNavigationLocalPosition = TargetRouteLocal;
-		bHasCachedNavigationLocalPosition = true;
-		SyncOwnerToCachedNavigationLocalPosition();
-		++ActiveSpecialLinkRouteTargetIndex;
-		if (bHasDeferredMoveRequest && ConsumeDeferredMoveRequestFromCurrentLocation())
-		{
-			return true;
-		}
-		if (!ActiveSpecialLinkRouteLocalLocations.IsValidIndex(ActiveSpecialLinkRouteTargetIndex))
-		{
-			CompleteCurrentSpecialLinkSegment();
-		}
-		return true;
-	}
-
-	const FVector Step = ToTarget.GetSafeNormal() * MaxTravelThisTick;
-	CachedNavigationLocalPosition = CurrentLocal + Step.GetClampedToMaxSize(DistanceToTarget);
-	bHasCachedNavigationLocalPosition = true;
-	SyncOwnerToCachedNavigationLocalPosition();
-	AgentState = EMobileSurfaceNavAgentState::UsingSpecialLink;
-	return true;
-}
-
-void UMobileSurfaceNavAgentComponent::CompleteCurrentSpecialLinkSegment()
-{
-	if (!CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-	{
-		return;
-	}
-
-	const FMobileSurfaceNavPathSegment& Segment = CurrentPath.Segments[CurrentSegmentIndex];
-	if (Segment.SegmentType == EMobileSurfaceNavPathSegmentType::Ladder && NavigationComponent)
-	{
-		if (AActor* Owner = GetOwner())
-		{
-			NavigationComponent->ReleaseLadderTraversal(Segment.SpecialLinkIndex, Owner);
-		}
-		ActiveLadderLinkIndex = INDEX_NONE;
-		ActiveLadderDirectionSign = 0;
-		ActiveSpecialLinkRouteWorldLocations.Reset();
-		ActiveSpecialLinkRouteLocalLocations.Reset();
-		ActiveSpecialLinkRouteTargetIndex = INDEX_NONE;
-	}
-
-	CurrentWaypointIndex = Segment.EndWaypointIndex;
-	++CurrentSegmentIndex;
-	AgentState = EMobileSurfaceNavAgentState::Moving;
-	if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
-	{
-		const FMobileSurfaceNavPathSegment& NextSegment = CurrentPath.Segments[CurrentSegmentIndex];
-		if (NextSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk)
-		{
-			CurrentWaypointIndex = FMath::Max(CurrentWaypointIndex + 1, NextSegment.StartWaypointIndex + 1);
-		}
-	}
-	else
-	{
-		HandleMoveCompleted();
-	}
-}
 
 bool UMobileSurfaceNavAgentComponent::IsInBlockingSpecialLinkTraversal() const
 {
@@ -1121,9 +489,7 @@ bool UMobileSurfaceNavAgentComponent::ConsumeDeferredMoveRequestFromCurrentLocat
 bool UMobileSurfaceNavAgentComponent::CacheCurrentNavigationLocalPosition()
 {
 	AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent && NavigationComponent->GetOwner()
-		? NavigationComponent->GetOwner()->GetRootComponent()
-		: nullptr;
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
 	if (!Owner || !SpaceComponent)
 	{
 		return false;
@@ -1137,9 +503,7 @@ bool UMobileSurfaceNavAgentComponent::CacheCurrentNavigationLocalPosition()
 bool UMobileSurfaceNavAgentComponent::SyncOwnerToCachedNavigationLocalPosition() const
 {
 	AActor* Owner = GetOwner();
-	const USceneComponent* SpaceComponent = NavigationComponent && NavigationComponent->GetOwner()
-		? NavigationComponent->GetOwner()->GetRootComponent()
-		: nullptr;
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
 	if (!Owner || !SpaceComponent || !bHasCachedNavigationLocalPosition)
 	{
 		return false;
@@ -1166,40 +530,11 @@ void UMobileSurfaceNavAgentComponent::EndPlay(const EEndPlayReason::Type EndPlay
 	Super::EndPlay(EndPlayReason);
 }
 
-void UMobileSurfaceNavAgentComponent::ResetActiveSpecialLinkState()
+const USceneComponent* UMobileSurfaceNavAgentComponent::GetNavigationSpaceComponent() const
 {
-	AActor* Owner = GetOwner();
-	if (NavigationComponent && ActiveLadderLinkIndex != INDEX_NONE && Owner)
-	{
-		NavigationComponent->ReleaseLadderTraversal(ActiveLadderLinkIndex, Owner);
-	}
-
-	if (AMobileSurfaceNavElevator* ElevatorActor = ActiveElevatorActor.Get())
-	{
-		if (Owner)
-		{
-			ElevatorActor->CancelRequest(Owner);
-			if (ElevatorActor->IsAgentBoarded(Owner) || ElevatorActor->IsTraversalComplete(Owner))
-			{
-				ElevatorActor->FinishTraversal(Owner);
-			}
-		}
-	}
-
-	ActiveElevatorActor.Reset();
-	bElevatorBoardingRequested = false;
-	ActiveLadderLinkIndex = INDEX_NONE;
-	ActiveLadderDirectionSign = 0;
-	ActiveSpecialLinkRouteWorldLocations.Reset();
-	ActiveSpecialLinkRouteLocalLocations.Reset();
-	ActiveSpecialLinkRouteTargetIndex = INDEX_NONE;
-}
-
-bool UMobileSurfaceNavAgentComponent::IsBoardedOnActiveElevator() const
-{
-	const AActor* Owner = GetOwner();
-	const AMobileSurfaceNavElevator* ElevatorActor = ActiveElevatorActor.Get();
-	return Owner && ElevatorActor && ElevatorActor->IsAgentBoarded(const_cast<AActor*>(Owner));
+	return NavigationComponent && NavigationComponent->GetOwner()
+		? NavigationComponent->GetOwner()->GetRootComponent()
+		: nullptr;
 }
 
 void UMobileSurfaceNavAgentComponent::QueueDeferredMoveRequest(const FVector& TargetLocalPosition)
@@ -1232,7 +567,7 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 	}
 
 	UWorld* World = GetWorld();
-	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
 	if (!World || !SpaceComponent)
 	{
 		return;
@@ -1253,9 +588,8 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 		}
 
 		const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
-		const bool bIsCurrentCorridorTriangle = TrianglePathIndex == LastDebugPathTriangleIndex;
-		const FColor TriangleColor = bIsCurrentCorridorTriangle ? FColor::Yellow : FColor(90, 180, 255);
-		const float LineThickness = bIsCurrentCorridorTriangle ? 5.0f : 2.0f;
+		const FColor TriangleColor = FColor(90, 180, 255);
+		const float LineThickness = 2.0f;
 
 		const FVector V0 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.X].LocalPosition);
 		const FVector V1 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition);
@@ -1352,46 +686,28 @@ void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
 		DrawDebugString(
 			World,
 			GetOwner()->GetActorLocation() + FVector(0.0, 0.0, AgentRadius + 40.0f),
-			FString::Printf(
-				TEXT("%s Seg=%d Wp=%d Layer=%.1f StartTri=%d EndTri=%d"),
-				LexAgentStateText(AgentState),
-				CurrentSegmentIndex,
-				CurrentWaypointIndex,
-				CurrentPath.AgentRadiusLayer,
-				CurrentPath.StartTriangleIndex,
-				CurrentPath.EndTriangleIndex),
+			FString::Printf(TEXT("%s Seg=%d Wp=%d"), LexAgentStateText(AgentState), CurrentSegmentIndex, CurrentWaypointIndex),
 			nullptr,
 			FColor::White,
 			Duration,
 			false,
 			1.0f);
-
-		if (CurrentPath.Waypoints.IsValidIndex(0))
-		{
-			DrawDebugString(
-				World,
-				LocalToWorld.TransformPosition(CurrentPath.Waypoints[0]) + FVector(0.0, 0.0, 18.0f),
-				FString::Printf(TEXT("PathStart L=%.1f"), CurrentPath.AgentRadiusLayer),
-				nullptr,
-				FColor::Green,
-				Duration,
-				false,
-				1.0f);
-		}
-
-		if (CurrentPath.Waypoints.Num() >= 2)
-		{
-			DrawDebugString(
-				World,
-				LocalToWorld.TransformPosition(CurrentPath.Waypoints.Last()) + FVector(0.0, 0.0, 18.0f),
-				TEXT("PathEnd"),
-				nullptr,
-				FColor::Red,
-				Duration,
-				false,
-				1.0f);
-		}
 	}
+}
+
+void UMobileSurfaceNavAgentComponent::AdvanceBeyondCurrentSegmentOrComplete()
+{
+	if (CurrentPath.Segments.IsValidIndex(CurrentSegmentIndex))
+	{
+		const FMobileSurfaceNavPathSegment& NextSegment = CurrentPath.Segments[CurrentSegmentIndex];
+		if (NextSegment.SegmentType == EMobileSurfaceNavPathSegmentType::Walk)
+		{
+			CurrentWaypointIndex = FMath::Max(CurrentWaypointIndex + 1, NextSegment.StartWaypointIndex + 1);
+		}
+		return;
+	}
+
+	HandleMoveCompleted();
 }
 
 void UMobileSurfaceNavAgentComponent::TickComponent(
@@ -1409,9 +725,6 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 
 	if (bDrawCurrentPathDebug)
 	{
-		LastDebugPathTriangleIndex = CurrentSegmentIndex >= 0 && CurrentSegmentIndex < CurrentPath.TriangleIndices.Num()
-			? CurrentSegmentIndex
-			: INDEX_NONE;
 		DrawCurrentPathDebug();
 	}
 

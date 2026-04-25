@@ -53,11 +53,6 @@ namespace MobileSurfaceNavigation::Builder
 		bool bClosed = false;
 	};
 
-	struct FBoundaryEdgeInfo
-	{
-		FVector TriangleNormal = FVector::UpVector;
-	};
-
 	struct FRegionBoundaryEdgeInfo
 	{
 		int32 StartVertex = INDEX_NONE;
@@ -72,36 +67,6 @@ namespace MobileSurfaceNavigation::Builder
 		FVector Normal = FVector::UpVector;
 		FVector Origin = FVector::ZeroVector;
 	};
-
-	static void AddBuildDebugSegment(
-		FMobileSurfaceNavData& NavData,
-		const int32 RegionId,
-		const FVector& StartLocalPosition,
-		const FVector& EndLocalPosition,
-		const EMobileSurfaceNavBuildDebugSegmentType SegmentType)
-	{
-		FMobileSurfaceNavBuildDebugSegment& Segment = NavData.BuildDebugSegments.AddDefaulted_GetRef();
-		Segment.RegionId = RegionId;
-		Segment.StartLocalPosition = StartLocalPosition;
-		Segment.EndLocalPosition = EndLocalPosition;
-		Segment.SegmentType = SegmentType;
-	}
-
-	static void AddBuildDebugLoop(
-		FMobileSurfaceNavData& NavData,
-		const int32 RegionId,
-		const TArray<FVector>& LocalPoints,
-		const EMobileSurfaceBoundaryKind Kind,
-		const EMobileSurfaceNavBuildDebugLoopType LoopType,
-		const bool bClosed)
-	{
-		FMobileSurfaceNavBuildDebugLoop& Loop = NavData.BuildDebugLoops.AddDefaulted_GetRef();
-		Loop.RegionId = RegionId;
-		Loop.LocalPoints = LocalPoints;
-		Loop.Kind = Kind;
-		Loop.LoopType = LoopType;
-		Loop.bClosed = bClosed;
-	}
 
 	static FVector ComputeReferenceUpVector(const UStaticMeshComponent* SourceComponent, const USceneComponent* TargetSpaceComponent)
 	{
@@ -733,44 +698,6 @@ namespace MobileSurfaceNavigation::Builder
 		}
 	}
 
-	static void BuildBoundaryEdgeInfo(
-		const FMobileSurfaceNavData& NavData,
-		TMap<FIntPoint, FBoundaryEdgeInfo>& OutEdgeInfo)
-	{
-		OutEdgeInfo.Reset();
-
-		for (int32 TriangleIndex = 0; TriangleIndex < NavData.Triangles.Num(); ++TriangleIndex)
-		{
-			const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
-			const int32 TriangleVertices[3] = { Triangle.VertexIndices.X, Triangle.VertexIndices.Y, Triangle.VertexIndices.Z };
-
-			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
-			{
-				const int32 VertexA = TriangleVertices[CornerIndex];
-				const int32 VertexB = TriangleVertices[(CornerIndex + 1) % 3];
-				const FIntPoint SortedKey = MakeSortedEdgeKey(VertexA, VertexB);
-
-				bool bIsBoundaryEdge = false;
-				for (const FMobileSurfaceNavEdge& Edge : NavData.Edges)
-				{
-					if (Edge.bIsBoundary && Edge.VertexIndices == SortedKey)
-					{
-						bIsBoundaryEdge = true;
-						break;
-					}
-				}
-
-				if (!bIsBoundaryEdge)
-				{
-					continue;
-				}
-
-				FBoundaryEdgeInfo& EdgeInfo = OutEdgeInfo.FindOrAdd(SortedKey);
-				EdgeInfo.TriangleNormal = Triangle.Normal;
-			}
-		}
-	}
-
 	static bool IntersectLines2D(
 		const FVector2d& PointA,
 		const FVector2d& DirA,
@@ -787,95 +714,6 @@ namespace MobileSurfaceNavigation::Builder
 		const FVector2d Delta = PointB - PointA;
 		const double T = ((Delta.X * DirB.Y) - (Delta.Y * DirB.X)) / Determinant;
 		OutIntersection = PointA + (DirA * T);
-		return true;
-	}
-
-	static bool ComputeInsetBoundaryVertexPosition(
-		const FMobileSurfaceNavData& NavData,
-		const TMap<FIntPoint, FBoundaryEdgeInfo>& EdgeInfoMap,
-		const int32 PrevVertexIndex,
-		const int32 CurrentVertexIndex,
-		const int32 NextVertexIndex,
-		const float AgentRadius,
-		FVector& OutPosition)
-	{
-		OutPosition = NavData.Vertices[CurrentVertexIndex].LocalPosition;
-		if (AgentRadius <= UE_KINDA_SMALL_NUMBER)
-		{
-			return true;
-		}
-
-		const FBoundaryEdgeInfo* PrevEdgeInfo = EdgeInfoMap.Find(MakeSortedEdgeKey(PrevVertexIndex, CurrentVertexIndex));
-		const FBoundaryEdgeInfo* NextEdgeInfo = EdgeInfoMap.Find(MakeSortedEdgeKey(CurrentVertexIndex, NextVertexIndex));
-		if (!PrevEdgeInfo || !NextEdgeInfo)
-		{
-			return false;
-		}
-
-		const FVector PrevPos = NavData.Vertices[PrevVertexIndex].LocalPosition;
-		const FVector CurrPos = NavData.Vertices[CurrentVertexIndex].LocalPosition;
-		const FVector NextPos = NavData.Vertices[NextVertexIndex].LocalPosition;
-
-		FVector PrevDir3D = CurrPos - PrevPos;
-		FVector NextDir3D = NextPos - CurrPos;
-		if (!PrevDir3D.Normalize() || !NextDir3D.Normalize())
-		{
-			return false;
-		}
-
-		const FVector PrevInset3D = FVector::CrossProduct(PrevEdgeInfo->TriangleNormal, PrevDir3D).GetSafeNormal();
-		const FVector NextInset3D = FVector::CrossProduct(NextEdgeInfo->TriangleNormal, NextDir3D).GetSafeNormal();
-
-		FVector PlaneNormal = (PrevEdgeInfo->TriangleNormal + NextEdgeInfo->TriangleNormal).GetSafeNormal();
-		if (PlaneNormal.IsNearlyZero())
-		{
-			PlaneNormal = PrevEdgeInfo->TriangleNormal.GetSafeNormal();
-		}
-		if (PlaneNormal.IsNearlyZero())
-		{
-			return false;
-		}
-
-		FVector BasisX = PrevDir3D - PlaneNormal * FVector::DotProduct(PrevDir3D, PlaneNormal);
-		if (!BasisX.Normalize())
-		{
-			BasisX = NextDir3D - PlaneNormal * FVector::DotProduct(NextDir3D, PlaneNormal);
-			if (!BasisX.Normalize())
-			{
-				return false;
-			}
-		}
-		const FVector BasisY = FVector::CrossProduct(PlaneNormal, BasisX).GetSafeNormal();
-
-		const auto ProjectTo2D = [&](const FVector& Point) -> FVector2d
-		{
-			const FVector Delta = Point - CurrPos;
-			return FVector2d(FVector::DotProduct(Delta, BasisX), FVector::DotProduct(Delta, BasisY));
-		};
-		const auto UnprojectFrom2D = [&](const FVector2d& Point2D) -> FVector
-		{
-			return CurrPos + BasisX * Point2D.X + BasisY * Point2D.Y;
-		};
-
-		const FVector2d PrevDir2D = ProjectTo2D(CurrPos + PrevDir3D).GetSafeNormal();
-		const FVector2d NextDir2D = ProjectTo2D(CurrPos + NextDir3D).GetSafeNormal();
-		const FVector2d PrevInset2D = ProjectTo2D(CurrPos + PrevInset3D).GetSafeNormal();
-		const FVector2d NextInset2D = ProjectTo2D(CurrPos + NextInset3D).GetSafeNormal();
-		if (PrevDir2D.IsNearlyZero() || NextDir2D.IsNearlyZero() || PrevInset2D.IsNearlyZero() || NextInset2D.IsNearlyZero())
-		{
-			return false;
-		}
-
-		const FVector2d PrevOffsetPoint = PrevInset2D * AgentRadius;
-		const FVector2d NextOffsetPoint = NextInset2D * AgentRadius;
-
-		FVector2d Intersection2D = FVector2d::ZeroVector;
-		if (!IntersectLines2D(PrevOffsetPoint, PrevDir2D, NextOffsetPoint, NextDir2D, Intersection2D))
-		{
-			Intersection2D = (PrevOffsetPoint + NextOffsetPoint) * 0.5;
-		}
-
-		OutPosition = UnprojectFrom2D(Intersection2D);
 		return true;
 	}
 
@@ -1368,14 +1206,6 @@ namespace MobileSurfaceNavigation::Builder
 			Remapped.EndVertex = *EndVertex;
 			DirectedPhysicalBoundaryMap.Add(MakeDirectedEdgeKey(*StartVertex, *EndVertex), Edge.bIsPhysicalBoundary);
 
-			AddBuildDebugSegment(
-				OutNavData,
-				RegionId,
-				SourceNavData.Vertices[Edge.StartVertex].LocalPosition,
-				SourceNavData.Vertices[Edge.EndVertex].LocalPosition,
-				Edge.bIsPhysicalBoundary
-					? EMobileSurfaceNavBuildDebugSegmentType::PhysicalBoundary
-					: EMobileSurfaceNavBuildDebugSegmentType::RegionSeam);
 		}
 
 		TArray<FBoundaryLoopTemp> RegionLoops;
@@ -1426,35 +1256,6 @@ namespace MobileSurfaceNavigation::Builder
 					}
 				}
 			}
-		}
-
-		TArray<EMobileSurfaceBoundaryKind> LoopBoundaryKinds;
-		LoopBoundaryKinds.Init(EMobileSurfaceBoundaryKind::Unknown, RegionLoops.Num());
-		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
-		{
-			LoopBoundaryKinds[LoopIndex] = bLoopInsetsTowardPolygonInterior.IsValidIndex(LoopIndex) && !bLoopInsetsTowardPolygonInterior[LoopIndex]
-				? EMobileSurfaceBoundaryKind::Hole
-				: EMobileSurfaceBoundaryKind::Outer;
-		}
-
-		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
-		{
-			const FBoundaryLoopTemp& Loop = RegionLoops[LoopIndex];
-			TArray<FVector> OriginalLoopPoints;
-			OriginalLoopPoints.Reserve(Loop.VertexIndices.Num());
-			for (const int32 RegionVertexIndex : Loop.VertexIndices)
-			{
-				const FVector2d Position2D = RegionVertices2D[RegionVertexIndex];
-				OriginalLoopPoints.Add(RegionOrigin + BasisX * Position2D.X + BasisY * Position2D.Y);
-			}
-
-			AddBuildDebugLoop(
-				OutNavData,
-				RegionId,
-				OriginalLoopPoints,
-				LoopBoundaryKinds[LoopIndex],
-				EMobileSurfaceNavBuildDebugLoopType::Original,
-				Loop.bClosed);
 		}
 
 		TArray<FVector2d> InsetVertices2D = RegionVertices2D;
@@ -1528,26 +1329,6 @@ namespace MobileSurfaceNavigation::Builder
 
 				InsetVertices2D[CurrentVertexIndex] = NewPosition;
 			}
-		}
-
-		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
-		{
-			const FBoundaryLoopTemp& Loop = RegionLoops[LoopIndex];
-			TArray<FVector> InsetLoopPoints;
-			InsetLoopPoints.Reserve(Loop.VertexIndices.Num());
-			for (const int32 RegionVertexIndex : Loop.VertexIndices)
-			{
-				const FVector2d Position2D = InsetVertices2D[RegionVertexIndex];
-				InsetLoopPoints.Add(RegionOrigin + BasisX * Position2D.X + BasisY * Position2D.Y);
-			}
-
-			AddBuildDebugLoop(
-				OutNavData,
-				RegionId,
-				InsetLoopPoints,
-				LoopBoundaryKinds[LoopIndex],
-				EMobileSurfaceNavBuildDebugLoopType::Inset,
-				Loop.bClosed);
 		}
 
 		TArray<FVector2d> CdtVertices2D;

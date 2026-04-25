@@ -15,8 +15,6 @@ struct FMobileSurfaceNavDebugSettings
 	bool bDrawPortals = false;
 	bool bDrawPortalLabels = false;
 	bool bDrawSpecialLinks = false;
-	bool bDrawBuildDebugData = false;
-	int32 BuildDebugRegionId = INDEX_NONE;
 	int32 HighlightPortalIndex = INDEX_NONE;
 	int32 HighlightSpecialLinkIndex = INDEX_NONE;
 	float VertexSize = 8.0f;
