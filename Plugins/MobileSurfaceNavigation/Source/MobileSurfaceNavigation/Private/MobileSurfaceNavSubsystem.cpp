@@ -76,8 +76,7 @@ bool UMobileSurfaceNavSubsystem::FindPathImmediate(
 		return false;
 	}
 
-	return FMobileSurfacePathfinder::FindPath(
-		NavComponent->GetNavigationData(),
+	return NavComponent->FindPathLocalWithParams(
 		StartLocalPosition,
 		EndLocalPosition,
 		Params,

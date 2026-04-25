@@ -53,6 +53,18 @@ namespace MobileSurfaceNavigation::Builder
 		bool bClosed = false;
 	};
 
+	struct FBoundaryEdgeInfo
+	{
+		FVector TriangleNormal = FVector::UpVector;
+	};
+
+	struct FRegionBoundaryEdgeInfo
+	{
+		int32 StartVertex = INDEX_NONE;
+		int32 EndVertex = INDEX_NONE;
+		bool bIsPhysicalBoundary = false;
+	};
+
 	struct FPlanarRegion
 	{
 		TArray<int32> TriangleIndices;
@@ -60,6 +72,36 @@ namespace MobileSurfaceNavigation::Builder
 		FVector Normal = FVector::UpVector;
 		FVector Origin = FVector::ZeroVector;
 	};
+
+	static void AddBuildDebugSegment(
+		FMobileSurfaceNavData& NavData,
+		const int32 RegionId,
+		const FVector& StartLocalPosition,
+		const FVector& EndLocalPosition,
+		const EMobileSurfaceNavBuildDebugSegmentType SegmentType)
+	{
+		FMobileSurfaceNavBuildDebugSegment& Segment = NavData.BuildDebugSegments.AddDefaulted_GetRef();
+		Segment.RegionId = RegionId;
+		Segment.StartLocalPosition = StartLocalPosition;
+		Segment.EndLocalPosition = EndLocalPosition;
+		Segment.SegmentType = SegmentType;
+	}
+
+	static void AddBuildDebugLoop(
+		FMobileSurfaceNavData& NavData,
+		const int32 RegionId,
+		const TArray<FVector>& LocalPoints,
+		const EMobileSurfaceBoundaryKind Kind,
+		const EMobileSurfaceNavBuildDebugLoopType LoopType,
+		const bool bClosed)
+	{
+		FMobileSurfaceNavBuildDebugLoop& Loop = NavData.BuildDebugLoops.AddDefaulted_GetRef();
+		Loop.RegionId = RegionId;
+		Loop.LocalPoints = LocalPoints;
+		Loop.Kind = Kind;
+		Loop.LoopType = LoopType;
+		Loop.bClosed = bClosed;
+	}
 
 	static FVector ComputeReferenceUpVector(const UStaticMeshComponent* SourceComponent, const USceneComponent* TargetSpaceComponent)
 	{
@@ -120,6 +162,11 @@ namespace MobileSurfaceNavigation::Builder
 	static FIntPoint MakeSortedEdgeKey(const int32 VertexA, const int32 VertexB)
 	{
 		return (VertexA <= VertexB) ? FIntPoint(VertexA, VertexB) : FIntPoint(VertexB, VertexA);
+	}
+
+	static uint64 MakeDirectedEdgeKey(const int32 VertexA, const int32 VertexB)
+	{
+		return (static_cast<uint64>(static_cast<uint32>(VertexA)) << 32) | static_cast<uint32>(VertexB);
 	}
 
 	static FVector ComputeAverageNormal(const TArray<FSourceTriangle>& Triangles, const TArray<int32>& TriangleIndices)
@@ -508,6 +555,52 @@ namespace MobileSurfaceNavigation::Builder
 		return BoundaryEdges;
 	}
 
+	static void CollectRegionBoundaryEdgeInfosFromNavData(
+		const FMobileSurfaceNavData& NavData,
+		const int32 RegionId,
+		TArray<FRegionBoundaryEdgeInfo>& OutBoundaryEdges)
+	{
+		OutBoundaryEdges.Reset();
+
+		if (!NavData.Regions.IsValidIndex(RegionId))
+		{
+			return;
+		}
+
+		for (const int32 TriangleIndex : NavData.Regions[RegionId].TriangleIndices)
+		{
+			if (!NavData.Triangles.IsValidIndex(TriangleIndex))
+			{
+				continue;
+			}
+
+			const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
+			const int32 TriangleVertices[3] = { Triangle.VertexIndices.X, Triangle.VertexIndices.Y, Triangle.VertexIndices.Z };
+			const int32 NeighborIndices[3] =
+			{
+				Triangle.NeighborTriangleIndices.X,
+				Triangle.NeighborTriangleIndices.Y,
+				Triangle.NeighborTriangleIndices.Z
+			};
+
+			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
+			{
+				const int32 NeighborTriangleIndex = NeighborIndices[CornerIndex];
+				const bool bIsRegionBoundary = NeighborTriangleIndex == INDEX_NONE ||
+					(!NavData.Triangles.IsValidIndex(NeighborTriangleIndex) || NavData.Triangles[NeighborTriangleIndex].RegionId != RegionId);
+				if (!bIsRegionBoundary)
+				{
+					continue;
+				}
+
+				FRegionBoundaryEdgeInfo& EdgeInfo = OutBoundaryEdges.AddDefaulted_GetRef();
+				EdgeInfo.StartVertex = TriangleVertices[CornerIndex];
+				EdgeInfo.EndVertex = TriangleVertices[(CornerIndex + 1) % 3];
+				EdgeInfo.bIsPhysicalBoundary = NeighborTriangleIndex == INDEX_NONE;
+			}
+		}
+	}
+
 	static void BuildGlobalBoundaryLoops(const TArray<FSourceTriangle>& Triangles, FMobileSurfaceNavData& OutNavData)
 	{
 		TArray<FBoundaryEdge> BoundaryEdges;
@@ -566,6 +659,224 @@ namespace MobileSurfaceNavigation::Builder
 		}
 
 		return bHasBoundary ? static_cast<float>(FMath::Sqrt(BestDistanceSquared)) : TNumericLimits<float>::Max();
+	}
+
+	static float ComputeTriangleUsableBoundaryClearance(const FMobileSurfaceNavData& NavData, const FMobileSurfaceNavTriangle& Triangle)
+	{
+		const FVector A = NavData.Vertices[Triangle.VertexIndices.X].LocalPosition;
+		const FVector B = NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition;
+		const FVector C = NavData.Vertices[Triangle.VertexIndices.Z].LocalPosition;
+		const FVector Centroid = Triangle.Center;
+		const FVector EdgeMidAB = (A + B) * 0.5f;
+		const FVector EdgeMidBC = (B + C) * 0.5f;
+		const FVector EdgeMidCA = (C + A) * 0.5f;
+
+		// Sample only inside the triangle. Using boundary vertices/midpoints makes every CDT triangle
+		// look invalid because those points often lie exactly on the mesh border.
+		const FVector InteriorSamples[] =
+		{
+			Centroid,
+			FMath::Lerp(Centroid, A, 0.35f),
+			FMath::Lerp(Centroid, B, 0.35f),
+			FMath::Lerp(Centroid, C, 0.35f),
+			FMath::Lerp(Centroid, EdgeMidAB, 0.5f),
+			FMath::Lerp(Centroid, EdgeMidBC, 0.5f),
+			FMath::Lerp(Centroid, EdgeMidCA, 0.5f)
+		};
+
+		float MinClearance = TNumericLimits<float>::Max();
+		for (const FVector& Sample : InteriorSamples)
+		{
+			MinClearance = FMath::Min(MinClearance, ComputeBoundaryClearance(NavData, Sample));
+		}
+
+		return MinClearance;
+	}
+
+	static void BuildGlobalBoundaryLoopsFromNavTriangles(FMobileSurfaceNavData& OutNavData)
+	{
+		TArray<FBoundaryEdge> BoundaryEdges;
+
+		for (const FMobileSurfaceNavTriangle& Triangle : OutNavData.Triangles)
+		{
+			const int32 TriangleVertices[3] = { Triangle.VertexIndices.X, Triangle.VertexIndices.Y, Triangle.VertexIndices.Z };
+			const int32 NeighborIndices[3] =
+			{
+				Triangle.NeighborTriangleIndices.X,
+				Triangle.NeighborTriangleIndices.Y,
+				Triangle.NeighborTriangleIndices.Z
+			};
+
+			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
+			{
+				if (NeighborIndices[CornerIndex] != INDEX_NONE)
+				{
+					continue;
+				}
+
+				FBoundaryEdge& Edge = BoundaryEdges.AddDefaulted_GetRef();
+				Edge.StartVertex = TriangleVertices[CornerIndex];
+				Edge.EndVertex = TriangleVertices[(CornerIndex + 1) % 3];
+			}
+		}
+
+		TArray<FBoundaryLoopTemp> Loops;
+		BuildLoopsFromEdges(BoundaryEdges, Loops);
+
+		OutNavData.BoundaryLoops.Reset();
+		for (const FBoundaryLoopTemp& Loop : Loops)
+		{
+			FMobileSurfaceNavBoundaryLoop& BoundaryLoop = OutNavData.BoundaryLoops.AddDefaulted_GetRef();
+			BoundaryLoop.VertexIndices = Loop.VertexIndices;
+			BoundaryLoop.bClosed = Loop.bClosed;
+			BoundaryLoop.Kind = EMobileSurfaceBoundaryKind::Outer;
+		}
+	}
+
+	static void BuildBoundaryEdgeInfo(
+		const FMobileSurfaceNavData& NavData,
+		TMap<FIntPoint, FBoundaryEdgeInfo>& OutEdgeInfo)
+	{
+		OutEdgeInfo.Reset();
+
+		for (int32 TriangleIndex = 0; TriangleIndex < NavData.Triangles.Num(); ++TriangleIndex)
+		{
+			const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
+			const int32 TriangleVertices[3] = { Triangle.VertexIndices.X, Triangle.VertexIndices.Y, Triangle.VertexIndices.Z };
+
+			for (int32 CornerIndex = 0; CornerIndex < 3; ++CornerIndex)
+			{
+				const int32 VertexA = TriangleVertices[CornerIndex];
+				const int32 VertexB = TriangleVertices[(CornerIndex + 1) % 3];
+				const FIntPoint SortedKey = MakeSortedEdgeKey(VertexA, VertexB);
+
+				bool bIsBoundaryEdge = false;
+				for (const FMobileSurfaceNavEdge& Edge : NavData.Edges)
+				{
+					if (Edge.bIsBoundary && Edge.VertexIndices == SortedKey)
+					{
+						bIsBoundaryEdge = true;
+						break;
+					}
+				}
+
+				if (!bIsBoundaryEdge)
+				{
+					continue;
+				}
+
+				FBoundaryEdgeInfo& EdgeInfo = OutEdgeInfo.FindOrAdd(SortedKey);
+				EdgeInfo.TriangleNormal = Triangle.Normal;
+			}
+		}
+	}
+
+	static bool IntersectLines2D(
+		const FVector2d& PointA,
+		const FVector2d& DirA,
+		const FVector2d& PointB,
+		const FVector2d& DirB,
+		FVector2d& OutIntersection)
+	{
+		const double Determinant = (DirA.X * DirB.Y) - (DirA.Y * DirB.X);
+		if (FMath::Abs(Determinant) <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return false;
+		}
+
+		const FVector2d Delta = PointB - PointA;
+		const double T = ((Delta.X * DirB.Y) - (Delta.Y * DirB.X)) / Determinant;
+		OutIntersection = PointA + (DirA * T);
+		return true;
+	}
+
+	static bool ComputeInsetBoundaryVertexPosition(
+		const FMobileSurfaceNavData& NavData,
+		const TMap<FIntPoint, FBoundaryEdgeInfo>& EdgeInfoMap,
+		const int32 PrevVertexIndex,
+		const int32 CurrentVertexIndex,
+		const int32 NextVertexIndex,
+		const float AgentRadius,
+		FVector& OutPosition)
+	{
+		OutPosition = NavData.Vertices[CurrentVertexIndex].LocalPosition;
+		if (AgentRadius <= UE_KINDA_SMALL_NUMBER)
+		{
+			return true;
+		}
+
+		const FBoundaryEdgeInfo* PrevEdgeInfo = EdgeInfoMap.Find(MakeSortedEdgeKey(PrevVertexIndex, CurrentVertexIndex));
+		const FBoundaryEdgeInfo* NextEdgeInfo = EdgeInfoMap.Find(MakeSortedEdgeKey(CurrentVertexIndex, NextVertexIndex));
+		if (!PrevEdgeInfo || !NextEdgeInfo)
+		{
+			return false;
+		}
+
+		const FVector PrevPos = NavData.Vertices[PrevVertexIndex].LocalPosition;
+		const FVector CurrPos = NavData.Vertices[CurrentVertexIndex].LocalPosition;
+		const FVector NextPos = NavData.Vertices[NextVertexIndex].LocalPosition;
+
+		FVector PrevDir3D = CurrPos - PrevPos;
+		FVector NextDir3D = NextPos - CurrPos;
+		if (!PrevDir3D.Normalize() || !NextDir3D.Normalize())
+		{
+			return false;
+		}
+
+		const FVector PrevInset3D = FVector::CrossProduct(PrevEdgeInfo->TriangleNormal, PrevDir3D).GetSafeNormal();
+		const FVector NextInset3D = FVector::CrossProduct(NextEdgeInfo->TriangleNormal, NextDir3D).GetSafeNormal();
+
+		FVector PlaneNormal = (PrevEdgeInfo->TriangleNormal + NextEdgeInfo->TriangleNormal).GetSafeNormal();
+		if (PlaneNormal.IsNearlyZero())
+		{
+			PlaneNormal = PrevEdgeInfo->TriangleNormal.GetSafeNormal();
+		}
+		if (PlaneNormal.IsNearlyZero())
+		{
+			return false;
+		}
+
+		FVector BasisX = PrevDir3D - PlaneNormal * FVector::DotProduct(PrevDir3D, PlaneNormal);
+		if (!BasisX.Normalize())
+		{
+			BasisX = NextDir3D - PlaneNormal * FVector::DotProduct(NextDir3D, PlaneNormal);
+			if (!BasisX.Normalize())
+			{
+				return false;
+			}
+		}
+		const FVector BasisY = FVector::CrossProduct(PlaneNormal, BasisX).GetSafeNormal();
+
+		const auto ProjectTo2D = [&](const FVector& Point) -> FVector2d
+		{
+			const FVector Delta = Point - CurrPos;
+			return FVector2d(FVector::DotProduct(Delta, BasisX), FVector::DotProduct(Delta, BasisY));
+		};
+		const auto UnprojectFrom2D = [&](const FVector2d& Point2D) -> FVector
+		{
+			return CurrPos + BasisX * Point2D.X + BasisY * Point2D.Y;
+		};
+
+		const FVector2d PrevDir2D = ProjectTo2D(CurrPos + PrevDir3D).GetSafeNormal();
+		const FVector2d NextDir2D = ProjectTo2D(CurrPos + NextDir3D).GetSafeNormal();
+		const FVector2d PrevInset2D = ProjectTo2D(CurrPos + PrevInset3D).GetSafeNormal();
+		const FVector2d NextInset2D = ProjectTo2D(CurrPos + NextInset3D).GetSafeNormal();
+		if (PrevDir2D.IsNearlyZero() || NextDir2D.IsNearlyZero() || PrevInset2D.IsNearlyZero() || NextInset2D.IsNearlyZero())
+		{
+			return false;
+		}
+
+		const FVector2d PrevOffsetPoint = PrevInset2D * AgentRadius;
+		const FVector2d NextOffsetPoint = NextInset2D * AgentRadius;
+
+		FVector2d Intersection2D = FVector2d::ZeroVector;
+		if (!IntersectLines2D(PrevOffsetPoint, PrevDir2D, NextOffsetPoint, NextDir2D, Intersection2D))
+		{
+			Intersection2D = (PrevOffsetPoint + NextOffsetPoint) * 0.5;
+		}
+
+		OutPosition = UnprojectFrom2D(Intersection2D);
+		return true;
 	}
 
 	static void RebuildFinalEdgesAndAdjacency(FMobileSurfaceNavData& OutNavData)
@@ -676,6 +987,58 @@ namespace MobileSurfaceNavigation::Builder
 
 		OutNavData.RegionRuntimeStates.SetNum(OutNavData.Regions.Num());
 		OutNavData.PortalRuntimeStates.SetNum(OutNavData.Portals.Num());
+	}
+
+	static void WeldCoincidentVertices(FMobileSurfaceNavData& InOutNavData, const float PositionTolerance)
+	{
+		if (InOutNavData.Vertices.IsEmpty())
+		{
+			return;
+		}
+
+		const float SafeTolerance = FMath::Max(PositionTolerance, KINDA_SMALL_NUMBER);
+		TMap<FVertexKey, int32> CanonicalVertexByKey;
+		TArray<FMobileSurfaceNavVertex> WeldedVertices;
+		WeldedVertices.Reserve(InOutNavData.Vertices.Num());
+
+		TArray<int32> OldToNewVertexIndex;
+		OldToNewVertexIndex.SetNum(InOutNavData.Vertices.Num());
+
+		for (int32 VertexIndex = 0; VertexIndex < InOutNavData.Vertices.Num(); ++VertexIndex)
+		{
+			const FVector& LocalPosition = InOutNavData.Vertices[VertexIndex].LocalPosition;
+			const FVertexKey VertexKey = MakeVertexKey(LocalPosition, SafeTolerance);
+
+			if (const int32* ExistingVertexIndex = CanonicalVertexByKey.Find(VertexKey))
+			{
+				OldToNewVertexIndex[VertexIndex] = *ExistingVertexIndex;
+				continue;
+			}
+
+			const int32 NewVertexIndex = WeldedVertices.Add(InOutNavData.Vertices[VertexIndex]);
+			CanonicalVertexByKey.Add(VertexKey, NewVertexIndex);
+			OldToNewVertexIndex[VertexIndex] = NewVertexIndex;
+		}
+
+		for (FMobileSurfaceNavTriangle& Triangle : InOutNavData.Triangles)
+		{
+			Triangle.VertexIndices.X = OldToNewVertexIndex.IsValidIndex(Triangle.VertexIndices.X) ? OldToNewVertexIndex[Triangle.VertexIndices.X] : Triangle.VertexIndices.X;
+			Triangle.VertexIndices.Y = OldToNewVertexIndex.IsValidIndex(Triangle.VertexIndices.Y) ? OldToNewVertexIndex[Triangle.VertexIndices.Y] : Triangle.VertexIndices.Y;
+			Triangle.VertexIndices.Z = OldToNewVertexIndex.IsValidIndex(Triangle.VertexIndices.Z) ? OldToNewVertexIndex[Triangle.VertexIndices.Z] : Triangle.VertexIndices.Z;
+		}
+
+		for (FMobileSurfaceNavBoundaryLoop& Loop : InOutNavData.BoundaryLoops)
+		{
+			for (int32& VertexIndex : Loop.VertexIndices)
+			{
+				if (OldToNewVertexIndex.IsValidIndex(VertexIndex))
+				{
+					VertexIndex = OldToNewVertexIndex[VertexIndex];
+				}
+			}
+		}
+
+		InOutNavData.Vertices = MoveTemp(WeldedVertices);
 	}
 
 	static bool TriangulateRegion(
@@ -921,6 +1284,347 @@ namespace MobileSurfaceNavigation::Builder
 
 		return NavRegion.TriangleIndices.Num() > 0;
 	}
+
+	static bool TriangulateInsetRegionFromNavData(
+		const FMobileSurfaceNavData& SourceNavData,
+		const int32 RegionId,
+		const float AgentRadius,
+		FMobileSurfaceNavData& OutNavData,
+		FString& OutError)
+	{
+		if (!SourceNavData.Regions.IsValidIndex(RegionId))
+		{
+			return false;
+		}
+
+		const FMobileSurfaceNavRegion& SourceRegion = SourceNavData.Regions[RegionId];
+		if (SourceRegion.TriangleIndices.IsEmpty())
+		{
+			return false;
+		}
+
+		FVector RegionNormal = SourceRegion.AverageNormal.GetSafeNormal(UE_SMALL_NUMBER, FVector::UpVector);
+		FVector RegionOrigin = FVector::ZeroVector;
+		for (const int32 TriangleIndex : SourceRegion.TriangleIndices)
+		{
+			if (SourceNavData.Triangles.IsValidIndex(TriangleIndex))
+			{
+				RegionOrigin += SourceNavData.Triangles[TriangleIndex].Center;
+			}
+		}
+		RegionOrigin /= static_cast<double>(SourceRegion.TriangleIndices.Num());
+
+		FVector BasisX = FVector::CrossProduct(RegionNormal, FVector::UpVector);
+		if (!BasisX.Normalize())
+		{
+			BasisX = FVector::CrossProduct(RegionNormal, FVector::RightVector);
+			BasisX.Normalize();
+		}
+		const FVector BasisY = FVector::CrossProduct(RegionNormal, BasisX).GetSafeNormal();
+
+		TMap<int32, int32> GlobalToRegionVertex;
+		TArray<int32> RegionToGlobalVertex;
+		TArray<FVector2d> RegionVertices2D;
+
+		TSet<int32> RegionVertexSet;
+		TArray<FRegionBoundaryEdgeInfo> BoundaryEdgeInfos;
+		CollectRegionBoundaryEdgeInfosFromNavData(SourceNavData, RegionId, BoundaryEdgeInfos);
+		for (const int32 TriangleIndex : SourceRegion.TriangleIndices)
+		{
+			if (!SourceNavData.Triangles.IsValidIndex(TriangleIndex))
+			{
+				continue;
+			}
+
+			const FMobileSurfaceNavTriangle& Triangle = SourceNavData.Triangles[TriangleIndex];
+			RegionVertexSet.Add(Triangle.VertexIndices.X);
+			RegionVertexSet.Add(Triangle.VertexIndices.Y);
+			RegionVertexSet.Add(Triangle.VertexIndices.Z);
+		}
+
+		for (const int32 GlobalVertexIndex : RegionVertexSet)
+		{
+			const int32 RegionVertexIndex = RegionToGlobalVertex.Add(GlobalVertexIndex);
+			GlobalToRegionVertex.Add(GlobalVertexIndex, RegionVertexIndex);
+
+			const FVector Delta = SourceNavData.Vertices[GlobalVertexIndex].LocalPosition - RegionOrigin;
+			RegionVertices2D.Add(FVector2d(FVector::DotProduct(Delta, BasisX), FVector::DotProduct(Delta, BasisY)));
+		}
+
+		TArray<FBoundaryEdge> RemappedBoundaryEdges;
+		RemappedBoundaryEdges.Reserve(BoundaryEdgeInfos.Num());
+		TMap<uint64, bool> DirectedPhysicalBoundaryMap;
+		for (const FRegionBoundaryEdgeInfo& Edge : BoundaryEdgeInfos)
+		{
+			const int32* StartVertex = GlobalToRegionVertex.Find(Edge.StartVertex);
+			const int32* EndVertex = GlobalToRegionVertex.Find(Edge.EndVertex);
+			if (!StartVertex || !EndVertex)
+			{
+				continue;
+			}
+
+			FBoundaryEdge& Remapped = RemappedBoundaryEdges.AddDefaulted_GetRef();
+			Remapped.StartVertex = *StartVertex;
+			Remapped.EndVertex = *EndVertex;
+			DirectedPhysicalBoundaryMap.Add(MakeDirectedEdgeKey(*StartVertex, *EndVertex), Edge.bIsPhysicalBoundary);
+
+			AddBuildDebugSegment(
+				OutNavData,
+				RegionId,
+				SourceNavData.Vertices[Edge.StartVertex].LocalPosition,
+				SourceNavData.Vertices[Edge.EndVertex].LocalPosition,
+				Edge.bIsPhysicalBoundary
+					? EMobileSurfaceNavBuildDebugSegmentType::PhysicalBoundary
+					: EMobileSurfaceNavBuildDebugSegmentType::RegionSeam);
+		}
+
+		TArray<FBoundaryLoopTemp> RegionLoops;
+		BuildLoopsFromEdges(RemappedBoundaryEdges, RegionLoops);
+		if (RegionLoops.IsEmpty())
+		{
+			return false;
+		}
+
+		TArray<FPolygon2d> LoopPolygons;
+		LoopPolygons.Reserve(RegionLoops.Num());
+		for (const FBoundaryLoopTemp& Loop : RegionLoops)
+		{
+			TArray<FVector2d> LoopPoints2D;
+			LoopPoints2D.Reserve(Loop.VertexIndices.Num());
+			for (const int32 RegionVertexIndex : Loop.VertexIndices)
+			{
+				LoopPoints2D.Add(RegionVertices2D[RegionVertexIndex]);
+			}
+
+			LoopPolygons.Emplace(LoopPoints2D);
+		}
+
+		TArray<bool> bLoopInsetsTowardPolygonInterior;
+		bLoopInsetsTowardPolygonInterior.Init(true, RegionLoops.Num());
+		{
+			FPlanarComplexd PlanarComplex;
+			PlanarComplex.bTrustOrientations = false;
+			for (const FPolygon2d& Polygon : LoopPolygons)
+			{
+				PlanarComplex.Polygons.Add(Polygon);
+			}
+			PlanarComplex.FindSolidRegions();
+
+			bLoopInsetsTowardPolygonInterior.Init(false, RegionLoops.Num());
+			for (const FPlanarComplexd::FPolygonNesting& Solid : PlanarComplex.Solids)
+			{
+				if (bLoopInsetsTowardPolygonInterior.IsValidIndex(Solid.OuterIndex))
+				{
+					bLoopInsetsTowardPolygonInterior[Solid.OuterIndex] = true;
+				}
+
+				for (const int32 HoleIndex : Solid.HoleIndices)
+				{
+					if (bLoopInsetsTowardPolygonInterior.IsValidIndex(HoleIndex))
+					{
+						bLoopInsetsTowardPolygonInterior[HoleIndex] = false;
+					}
+				}
+			}
+		}
+
+		TArray<EMobileSurfaceBoundaryKind> LoopBoundaryKinds;
+		LoopBoundaryKinds.Init(EMobileSurfaceBoundaryKind::Unknown, RegionLoops.Num());
+		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
+		{
+			LoopBoundaryKinds[LoopIndex] = bLoopInsetsTowardPolygonInterior.IsValidIndex(LoopIndex) && !bLoopInsetsTowardPolygonInterior[LoopIndex]
+				? EMobileSurfaceBoundaryKind::Hole
+				: EMobileSurfaceBoundaryKind::Outer;
+		}
+
+		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
+		{
+			const FBoundaryLoopTemp& Loop = RegionLoops[LoopIndex];
+			TArray<FVector> OriginalLoopPoints;
+			OriginalLoopPoints.Reserve(Loop.VertexIndices.Num());
+			for (const int32 RegionVertexIndex : Loop.VertexIndices)
+			{
+				const FVector2d Position2D = RegionVertices2D[RegionVertexIndex];
+				OriginalLoopPoints.Add(RegionOrigin + BasisX * Position2D.X + BasisY * Position2D.Y);
+			}
+
+			AddBuildDebugLoop(
+				OutNavData,
+				RegionId,
+				OriginalLoopPoints,
+				LoopBoundaryKinds[LoopIndex],
+				EMobileSurfaceNavBuildDebugLoopType::Original,
+				Loop.bClosed);
+		}
+
+		TArray<FVector2d> InsetVertices2D = RegionVertices2D;
+		for (int32 LoopArrayIndex = 0; LoopArrayIndex < RegionLoops.Num(); ++LoopArrayIndex)
+		{
+			const FBoundaryLoopTemp& Loop = RegionLoops[LoopArrayIndex];
+			if (!Loop.bClosed || Loop.VertexIndices.Num() < 3)
+			{
+				continue;
+			}
+
+			const FPolygon2d& LoopPolygon = LoopPolygons[LoopArrayIndex];
+			const bool bCounterClockwise = LoopPolygon.IsClockwise() == false;
+			const bool bInsetTowardPolygonInterior = bLoopInsetsTowardPolygonInterior.IsValidIndex(LoopArrayIndex)
+				? bLoopInsetsTowardPolygonInterior[LoopArrayIndex]
+				: true;
+
+			for (int32 LoopIndex = 0; LoopIndex < Loop.VertexIndices.Num(); ++LoopIndex)
+			{
+				const int32 PrevLoopIndex = (LoopIndex - 1 + Loop.VertexIndices.Num()) % Loop.VertexIndices.Num();
+				const int32 NextLoopIndex = (LoopIndex + 1) % Loop.VertexIndices.Num();
+				const int32 PrevVertexIndex = Loop.VertexIndices[PrevLoopIndex];
+				const int32 CurrentVertexIndex = Loop.VertexIndices[LoopIndex];
+				const int32 NextVertexIndex = Loop.VertexIndices[NextLoopIndex];
+
+				const bool bPrevPhysical = DirectedPhysicalBoundaryMap.FindRef(MakeDirectedEdgeKey(PrevVertexIndex, CurrentVertexIndex));
+				const bool bNextPhysical = DirectedPhysicalBoundaryMap.FindRef(MakeDirectedEdgeKey(CurrentVertexIndex, NextVertexIndex));
+				if (!bPrevPhysical && !bNextPhysical)
+				{
+					continue;
+				}
+
+				const FVector2d PrevPos = RegionVertices2D[PrevVertexIndex];
+				const FVector2d CurrPos = RegionVertices2D[CurrentVertexIndex];
+				const FVector2d NextPos = RegionVertices2D[NextVertexIndex];
+
+				FVector2d PrevDir = (CurrPos - PrevPos).GetSafeNormal();
+				FVector2d NextDir = (NextPos - CurrPos).GetSafeNormal();
+				if (PrevDir.IsNearlyZero() || NextDir.IsNearlyZero())
+				{
+					continue;
+				}
+
+				const auto MakeInwardNormal = [&](const FVector2d& Dir) -> FVector2d
+				{
+					const FVector2d PolygonInteriorNormal = bCounterClockwise ? FVector2d(-Dir.Y, Dir.X) : FVector2d(Dir.Y, -Dir.X);
+					return bInsetTowardPolygonInterior ? PolygonInteriorNormal : -PolygonInteriorNormal;
+				};
+
+				const FVector2d PrevNormal = MakeInwardNormal(PrevDir);
+				const FVector2d NextNormal = MakeInwardNormal(NextDir);
+				FVector2d NewPosition = CurrPos;
+
+				if (bPrevPhysical && bNextPhysical)
+				{
+					const FVector2d PrevOffsetPoint = CurrPos + PrevNormal * AgentRadius;
+					const FVector2d NextOffsetPoint = CurrPos + NextNormal * AgentRadius;
+					if (!IntersectLines2D(PrevOffsetPoint, PrevDir, NextOffsetPoint, NextDir, NewPosition))
+					{
+						NewPosition = CurrPos + (PrevNormal + NextNormal).GetSafeNormal() * AgentRadius;
+					}
+				}
+				else if (bPrevPhysical)
+				{
+					NewPosition = CurrPos + PrevNormal * AgentRadius;
+				}
+				else if (bNextPhysical)
+				{
+					NewPosition = CurrPos + NextNormal * AgentRadius;
+				}
+
+				InsetVertices2D[CurrentVertexIndex] = NewPosition;
+			}
+		}
+
+		for (int32 LoopIndex = 0; LoopIndex < RegionLoops.Num(); ++LoopIndex)
+		{
+			const FBoundaryLoopTemp& Loop = RegionLoops[LoopIndex];
+			TArray<FVector> InsetLoopPoints;
+			InsetLoopPoints.Reserve(Loop.VertexIndices.Num());
+			for (const int32 RegionVertexIndex : Loop.VertexIndices)
+			{
+				const FVector2d Position2D = InsetVertices2D[RegionVertexIndex];
+				InsetLoopPoints.Add(RegionOrigin + BasisX * Position2D.X + BasisY * Position2D.Y);
+			}
+
+			AddBuildDebugLoop(
+				OutNavData,
+				RegionId,
+				InsetLoopPoints,
+				LoopBoundaryKinds[LoopIndex],
+				EMobileSurfaceNavBuildDebugLoopType::Inset,
+				Loop.bClosed);
+		}
+
+		TArray<FVector2d> CdtVertices2D;
+		CdtVertices2D.Reserve(RegionToGlobalVertex.Num());
+		TArray<int32> CdtToLayerVertexIndex;
+		CdtToLayerVertexIndex.Reserve(RegionToGlobalVertex.Num());
+		for (int32 RegionVertexIndex = 0; RegionVertexIndex < RegionToGlobalVertex.Num(); ++RegionVertexIndex)
+		{
+			const FVector2d Position2D = InsetVertices2D[RegionVertexIndex];
+			const FVector Position3D = RegionOrigin + BasisX * Position2D.X + BasisY * Position2D.Y;
+			FMobileSurfaceNavVertex& Vertex = OutNavData.Vertices.AddDefaulted_GetRef();
+			Vertex.LocalPosition = Position3D;
+			OutNavData.LocalBounds += Position3D;
+
+			CdtVertices2D.Add(Position2D);
+			CdtToLayerVertexIndex.Add(OutNavData.Vertices.Num() - 1);
+		}
+
+		TArray<FIndex2i> ConstrainedEdges;
+		ConstrainedEdges.Reserve(RemappedBoundaryEdges.Num());
+		for (const FBoundaryEdge& Edge : RemappedBoundaryEdges)
+		{
+			ConstrainedEdges.Add(FIndex2i(Edge.StartVertex, Edge.EndVertex));
+		}
+
+		FDelaunay2 Delaunay;
+		Delaunay.bAutomaticallyFixEdgesToDuplicateVertices = true;
+		Delaunay.bValidateEdges = true;
+
+		if (!Delaunay.Triangulate(CdtVertices2D, ConstrainedEdges))
+		{
+			OutError = FString::Printf(TEXT("Inset CDT failed for region %d. Result=%d"), RegionId, static_cast<int32>(Delaunay.GetResult()));
+			return false;
+		}
+
+		const TArray<FIndex3i> RegionTriangles = Delaunay.GetFilledTriangles(ConstrainedEdges, FDelaunay2::EFillMode::PositiveWinding);
+		if (RegionTriangles.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Inset CDT produced no filled triangles for region %d."), RegionId);
+			return false;
+		}
+
+		FMobileSurfaceNavRegion& NavRegion = OutNavData.Regions[RegionId];
+		NavRegion.AverageNormal = RegionNormal;
+
+		for (const FIndex3i& RegionTriangle : RegionTriangles)
+		{
+			const int32 LayerVertex0 = CdtToLayerVertexIndex[RegionTriangle.A];
+			int32 LayerVertex1 = CdtToLayerVertexIndex[RegionTriangle.B];
+			int32 LayerVertex2 = CdtToLayerVertexIndex[RegionTriangle.C];
+
+			const FVector Position0 = OutNavData.Vertices[LayerVertex0].LocalPosition;
+			const FVector Position1 = OutNavData.Vertices[LayerVertex1].LocalPosition;
+			const FVector Position2 = OutNavData.Vertices[LayerVertex2].LocalPosition;
+			FVector TriangleNormal = FVector::CrossProduct(Position1 - Position0, Position2 - Position0);
+			if (TriangleNormal.SizeSquared() <= UE_SMALL_NUMBER)
+			{
+				continue;
+			}
+
+			if (FVector::DotProduct(TriangleNormal, RegionNormal) < 0.0f)
+			{
+				Swap(LayerVertex1, LayerVertex2);
+				TriangleNormal *= -1.0f;
+			}
+
+			FMobileSurfaceNavTriangle& NavTriangle = OutNavData.Triangles.AddDefaulted_GetRef();
+			const int32 NavTriangleIndex = OutNavData.Triangles.Num() - 1;
+			NavTriangle.VertexIndices = FIntVector(LayerVertex0, LayerVertex1, LayerVertex2);
+			NavTriangle.Normal = TriangleNormal.GetSafeNormal();
+			NavTriangle.Center = (Position0 + Position1 + Position2) / 3.0f;
+			NavTriangle.RegionId = RegionId;
+			NavRegion.TriangleIndices.Add(NavTriangleIndex);
+		}
+
+		return NavRegion.TriangleIndices.Num() > 0;
+	}
 }
 
 bool FMobileSurfaceNavigationBuilder::BuildFromStaticMeshComponent(
@@ -1021,5 +1725,67 @@ bool FMobileSurfaceNavigationBuilder::BuildFromStaticMeshComponent(
 		OutNavData.Regions.Num(),
 		*OutNavData.BuildNotes);
 
+	return true;
+}
+
+bool FMobileSurfaceNavigationBuilder::BuildAgentRadiusLayer(
+	const FMobileSurfaceNavData& SourceNavData,
+	const float AgentRadius,
+	FMobileSurfaceNavData& OutNavData,
+	FString& OutError)
+{
+	OutNavData.Reset();
+	OutError.Reset();
+
+	if (!SourceNavData.bIsValid)
+	{
+		OutError = TEXT("Source navigation data is invalid.");
+		return false;
+	}
+
+	if (AgentRadius <= UE_KINDA_SMALL_NUMBER)
+	{
+		OutNavData = SourceNavData;
+		return true;
+	}
+
+	OutNavData.Reset();
+	OutNavData.RegionRuntimeStates = SourceNavData.RegionRuntimeStates;
+	OutNavData.Regions.SetNum(SourceNavData.Regions.Num());
+
+	// Base special links are copied later and remapped by the component layer sync.
+	for (int32 RegionId = 0; RegionId < SourceNavData.Regions.Num(); ++RegionId)
+	{
+		if (!MobileSurfaceNavigation::Builder::TriangulateInsetRegionFromNavData(SourceNavData, RegionId, AgentRadius, OutNavData, OutError))
+		{
+			if (!OutError.IsEmpty())
+			{
+				return false;
+			}
+		}
+	}
+
+	if (OutNavData.Triangles.IsEmpty())
+	{
+		OutError = FString::Printf(TEXT("No navigation triangles remain for agent radius %.2f after inset triangulation."), AgentRadius);
+		return false;
+	}
+
+	MobileSurfaceNavigation::Builder::WeldCoincidentVertices(OutNavData, 0.01f);
+	MobileSurfaceNavigation::Builder::RebuildFinalEdgesAndAdjacency(OutNavData);
+	MobileSurfaceNavigation::Builder::BuildGlobalBoundaryLoopsFromNavTriangles(OutNavData);
+	OutNavData.SpecialLinks = SourceNavData.SpecialLinks;
+
+	OutNavData.BuildNotes = FString::Printf(
+		TEXT("Derived navigation layer baked for agent radius %.2f using inset boundary geometry."),
+		AgentRadius);
+	OutNavData.bIsValid = true;
+	UE_LOG(
+		LogMobileSurfaceNavigationBuilder,
+		Log,
+		TEXT("Radius layer %.2f: triangles=%d portals=%d"),
+		AgentRadius,
+		OutNavData.Triangles.Num(),
+		OutNavData.Portals.Num());
 	return true;
 }

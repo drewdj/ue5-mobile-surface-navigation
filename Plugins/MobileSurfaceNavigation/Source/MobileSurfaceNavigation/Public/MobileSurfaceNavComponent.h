@@ -51,6 +51,9 @@ public:
 	bool HasValidNavigationData() const;
 
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
+	bool HasNavigationDataForAgentRadius(float AgentRadius) const;
+
+	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
 	bool WasLastBuildSuccessful() const;
 
 	UFUNCTION(BlueprintPure, Category = "Mobile Surface Navigation")
@@ -196,6 +199,7 @@ public:
 	void DisableSelectedSpecialLink();
 
 	const FMobileSurfaceNavData& GetNavigationData() const;
+	const FMobileSurfaceNavData* GetNavigationDataForAgentRadius(float AgentRadius) const;
 
 	const FString& GetLastBuildError() const;
 
@@ -222,6 +226,12 @@ private:
 	void DestroyPortalLabelComponents();
 	void UpdateTickState();
 	void EnsureSpecialLinkRuntimeStateSize();
+	void RebuildAgentRadiusLayers();
+	void SyncRuntimeStateToLayers();
+	void SyncSpecialLinksToLayers();
+	const FMobileSurfaceNavData* ResolveNavigationDataForAgentRadius(float AgentRadius) const;
+	FMobileSurfaceNavData* FindNavigationLayerDataByRadius(float AgentRadius);
+	const FMobileSurfaceNavData* FindNavigationLayerDataByRadius(float AgentRadius) const;
 	FMobileSurfaceNavLadderRuntimeState* GetLadderRuntimeState(int32 LinkIndex);
 	const FMobileSurfaceNavLadderRuntimeState* GetLadderRuntimeState(int32 LinkIndex) const;
 	void CleanupLadderRuntimeState(FMobileSurfaceNavLadderRuntimeState& RuntimeState) const;
@@ -240,6 +250,9 @@ private:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Build", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
 	float BoundarySimplificationTolerance = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Build", meta = (AllowPrivateAccess = "true"))
+	TArray<float> SupportedAgentRadii;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
 	bool bDrawDebugEveryTick = false;
@@ -322,8 +335,26 @@ private:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
 	float DebugDuration = 15.0f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float DebugDrawAgentRadius = 0.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawAllAgentRadiusLayers = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "0.0"))
+	float DebugLayerVerticalSpacing = 40.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true"))
+	bool bDrawBuildDebugData = false;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Mobile Surface Navigation|Debug", meta = (AllowPrivateAccess = "true", ClampMin = "-1"))
+	int32 DebugBuildRegionId = INDEX_NONE;
+
 	UPROPERTY(BlueprintReadOnly, Category = "Mobile Surface Navigation", Transient, meta = (AllowPrivateAccess = "true"))
 	FMobileSurfaceNavData NavigationData;
+
+	UPROPERTY(BlueprintReadOnly, Category = "Mobile Surface Navigation", Transient, meta = (AllowPrivateAccess = "true"))
+	TArray<FMobileSurfaceNavDataLayer> NavigationDataLayers;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Mobile Surface Navigation", meta = (AllowPrivateAccess = "true"))
 	FString LastBuildError;

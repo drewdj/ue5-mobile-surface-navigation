@@ -18,6 +18,39 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Kismet/GameplayStatics.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavComponent, Log, All);
+
+namespace
+{
+	static void CollectSortedUniqueRadii(const TArray<float>& InRadii, TArray<float>& OutRadii)
+	{
+		OutRadii.Reset();
+		for (const float Radius : InRadii)
+		{
+			if (Radius > UE_KINDA_SMALL_NUMBER)
+			{
+				OutRadii.Add(Radius);
+			}
+		}
+
+		OutRadii.Sort();
+		for (int32 Index = OutRadii.Num() - 1; Index > 0; --Index)
+		{
+			if (FMath::IsNearlyEqual(OutRadii[Index], OutRadii[Index - 1], KINDA_SMALL_NUMBER))
+			{
+				OutRadii.RemoveAt(Index);
+			}
+		}
+	}
+
+	static FIntPoint GetSortedPortalVertexKey(const FMobileSurfaceNavPortal& Portal)
+	{
+		return Portal.VertexIndices.X <= Portal.VertexIndices.Y
+			? Portal.VertexIndices
+			: FIntPoint(Portal.VertexIndices.Y, Portal.VertexIndices.X);
+	}
+}
+
 UMobileSurfaceNavComponent::UMobileSurfaceNavComponent()
 {
 	PrimaryComponentTick.bCanEverTick = true;
@@ -28,6 +61,7 @@ void UMobileSurfaceNavComponent::RebuildNavigationData()
 {
 	LastBuildError.Reset();
 	NavigationData.Reset();
+	NavigationDataLayers.Reset();
 	bLastBuildSucceeded = false;
 
 	FMobileSurfaceNavBuildSettings Settings;
@@ -49,6 +83,7 @@ void UMobileSurfaceNavComponent::RebuildNavigationData()
 		return;
 	}
 
+	RebuildAgentRadiusLayers();
 	bLastBuildSucceeded = true;
 
 	UpdateTickState();
@@ -69,11 +104,66 @@ void UMobileSurfaceNavComponent::DrawNavigationDebug(const float Duration)
 	Settings.bDrawPortals = bDrawPortals;
 	Settings.bDrawPortalLabels = bDrawPortalLabels;
 	Settings.bDrawSpecialLinks = bDrawSpecialLinks;
+	Settings.bDrawBuildDebugData = bDrawBuildDebugData;
+	Settings.BuildDebugRegionId = DebugBuildRegionId;
 	Settings.HighlightPortalIndex = SelectedPortalIndex;
 	Settings.HighlightSpecialLinkIndex = SelectedSpecialLinkIndex;
 	Settings.Duration = Duration;
 
-	FMobileSurfaceNavigationDebug::DrawNavData(GetWorld(), GetNavigationSpaceComponent(), NavigationData, Settings);
+	UWorld* World = GetWorld();
+	const USceneComponent* SpaceComponent = GetNavigationSpaceComponent();
+	if (!World || !SpaceComponent)
+	{
+		return;
+	}
+
+	if (bDrawAllAgentRadiusLayers && !NavigationDataLayers.IsEmpty())
+	{
+		FMobileSurfaceNavDebugSettings BaseSettings = Settings;
+		BaseSettings.WorldOffset = FVector::ZeroVector;
+		FMobileSurfaceNavigationDebug::DrawNavData(World, SpaceComponent, NavigationData, BaseSettings);
+
+		const FVector BaseLabelLocation = SpaceComponent->GetComponentTransform().TransformPosition(NavigationData.LocalBounds.GetCenter());
+		DrawDebugString(
+			World,
+			BaseLabelLocation + FVector(0.0f, 0.0f, 30.0f),
+			FString::Printf(TEXT("Base [T=%d P=%d]"), NavigationData.Triangles.Num(), NavigationData.Portals.Num()),
+			nullptr,
+			FColor::White,
+			Duration,
+			false,
+			1.2f);
+
+		for (int32 LayerIndex = 0; LayerIndex < NavigationDataLayers.Num(); ++LayerIndex)
+		{
+			const FMobileSurfaceNavDataLayer& Layer = NavigationDataLayers[LayerIndex];
+			if (!Layer.NavigationData.bIsValid)
+			{
+				continue;
+			}
+
+			FMobileSurfaceNavDebugSettings LayerSettings = Settings;
+			LayerSettings.WorldOffset = FVector(0.0f, 0.0f, DebugLayerVerticalSpacing * static_cast<float>(LayerIndex + 1));
+			FMobileSurfaceNavigationDebug::DrawNavData(World, SpaceComponent, Layer.NavigationData, LayerSettings);
+
+			const FVector LayerLabelLocation = SpaceComponent->GetComponentTransform().TransformPosition(Layer.NavigationData.LocalBounds.GetCenter()) + LayerSettings.WorldOffset;
+			DrawDebugString(
+				World,
+				LayerLabelLocation + FVector(0.0f, 0.0f, 30.0f),
+				FString::Printf(TEXT("R=%.1f [T=%d P=%d]"), Layer.AgentRadius, Layer.NavigationData.Triangles.Num(), Layer.NavigationData.Portals.Num()),
+				nullptr,
+				FColor::Cyan,
+				Duration,
+				false,
+				1.2f);
+		}
+	}
+	else
+	{
+		const FMobileSurfaceNavData* DebugNavData = ResolveNavigationDataForAgentRadius(DebugDrawAgentRadius);
+		FMobileSurfaceNavigationDebug::DrawNavData(World, SpaceComponent, DebugNavData ? *DebugNavData : NavigationData, Settings);
+	}
+
 	DrawDebugPath(Duration);
 }
 
@@ -81,7 +171,7 @@ bool UMobileSurfaceNavComponent::FindPathLocal(const FVector& StartLocalPosition
 {
 	FMobileSurfacePathQueryParams Params;
 	Params.AgentRadius = AgentRadius;
-	return FMobileSurfacePathfinder::FindPath(NavigationData, StartLocalPosition, EndLocalPosition, Params, OutPath);
+	return FindPathLocalWithParams(StartLocalPosition, EndLocalPosition, Params, OutPath);
 }
 
 bool UMobileSurfaceNavComponent::FindPathLocalWithParams(
@@ -90,7 +180,35 @@ bool UMobileSurfaceNavComponent::FindPathLocalWithParams(
 	const FMobileSurfacePathQueryParams& Params,
 	FMobileSurfaceNavPath& OutPath) const
 {
-	return FMobileSurfacePathfinder::FindPath(NavigationData, StartLocalPosition, EndLocalPosition, Params, OutPath);
+	const FMobileSurfaceNavData* NavData = ResolveNavigationDataForAgentRadius(Params.AgentRadius);
+	if (!NavData || !FMobileSurfacePathfinder::FindPath(*NavData, StartLocalPosition, EndLocalPosition, Params, OutPath))
+	{
+		return false;
+	}
+
+	OutPath.AgentRadiusLayer = 0.0f;
+	for (const FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		if (&Layer.NavigationData == NavData)
+		{
+			OutPath.AgentRadiusLayer = Layer.AgentRadius;
+			break;
+		}
+	}
+
+	UE_LOG(
+		LogMobileSurfaceNavComponent,
+		Log,
+		TEXT("FindPathLocalWithParams: requestedRadius=%.1f resolvedLayer=%.1f triangles=%d startTri=%d endTri=%d waypoints=%d start=%s end=%s"),
+		Params.AgentRadius,
+		OutPath.AgentRadiusLayer,
+		OutPath.TriangleIndices.Num(),
+		OutPath.StartTriangleIndex,
+		OutPath.EndTriangleIndex,
+		OutPath.Waypoints.Num(),
+		*StartLocalPosition.ToCompactString(),
+		*EndLocalPosition.ToCompactString());
+	return true;
 }
 
 int32 UMobileSurfaceNavComponent::FindContainingTriangle(const FVector& LocalPosition) const
@@ -107,6 +225,7 @@ void UMobileSurfaceNavComponent::ClearNavigationData()
 {
 	DestroyPortalLabelComponents();
 	NavigationData.Reset();
+	NavigationDataLayers.Reset();
 	LastBuildError.Reset();
 	bLastBuildSucceeded = false;
 	UpdateTickState();
@@ -115,6 +234,11 @@ void UMobileSurfaceNavComponent::ClearNavigationData()
 bool UMobileSurfaceNavComponent::HasValidNavigationData() const
 {
 	return NavigationData.bIsValid;
+}
+
+bool UMobileSurfaceNavComponent::HasNavigationDataForAgentRadius(const float AgentRadius) const
+{
+	return ResolveNavigationDataForAgentRadius(AgentRadius) != nullptr;
 }
 
 bool UMobileSurfaceNavComponent::WasLastBuildSuccessful() const
@@ -403,6 +527,7 @@ int32 UMobileSurfaceNavComponent::AddSpecialLinkFromLocalNodes(
 	}
 
 	const int32 LinkIndex = NavigationData.SpecialLinks.Add(Link);
+	SyncSpecialLinksToLayers();
 	EnsureSpecialLinkRuntimeStateSize();
 	MarkRuntimeStateDirty();
 	return LinkIndex;
@@ -469,6 +594,7 @@ bool UMobileSurfaceNavComponent::SetSpecialLinkEnabled(const int32 LinkIndex, co
 	}
 
 	NavigationData.SpecialLinks[LinkIndex].bEnabled = bEnabled;
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 	return true;
 }
@@ -492,6 +618,7 @@ bool UMobileSurfaceNavComponent::SetSpecialLinkTraversalMode(const int32 LinkInd
 				false);
 		}
 	}
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 	return true;
 }
@@ -517,6 +644,7 @@ bool UMobileSurfaceNavComponent::SetSpecialLinkElevatorActor(
 				true);
 		}
 	}
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 	return true;
 }
@@ -547,6 +675,7 @@ bool UMobileSurfaceNavComponent::SetSpecialLinkNodes(const int32 LinkIndex, cons
 		}
 	}
 
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 	return true;
 }
@@ -571,6 +700,7 @@ bool UMobileSurfaceNavComponent::RemoveSpecialLink(const int32 LinkIndex)
 	{
 		--SelectedSpecialLinkIndex;
 	}
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 	return true;
 }
@@ -580,6 +710,7 @@ void UMobileSurfaceNavComponent::ClearSpecialLinks()
 	NavigationData.SpecialLinks.Reset();
 	LadderRuntimeStates.Reset();
 	SelectedSpecialLinkIndex = INDEX_NONE;
+	SyncSpecialLinksToLayers();
 	MarkRuntimeStateDirty();
 }
 
@@ -708,6 +839,140 @@ const FMobileSurfaceNavData& UMobileSurfaceNavComponent::GetNavigationData() con
 	return NavigationData;
 }
 
+const FMobileSurfaceNavData* UMobileSurfaceNavComponent::GetNavigationDataForAgentRadius(const float AgentRadius) const
+{
+	return ResolveNavigationDataForAgentRadius(AgentRadius);
+}
+
+FMobileSurfaceNavData* UMobileSurfaceNavComponent::FindNavigationLayerDataByRadius(const float AgentRadius)
+{
+	for (FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		if (FMath::IsNearlyEqual(Layer.AgentRadius, AgentRadius, KINDA_SMALL_NUMBER))
+		{
+			return &Layer.NavigationData;
+		}
+	}
+
+	return nullptr;
+}
+
+const FMobileSurfaceNavData* UMobileSurfaceNavComponent::FindNavigationLayerDataByRadius(const float AgentRadius) const
+{
+	for (const FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		if (FMath::IsNearlyEqual(Layer.AgentRadius, AgentRadius, KINDA_SMALL_NUMBER))
+		{
+			return &Layer.NavigationData;
+		}
+	}
+
+	return nullptr;
+}
+
+const FMobileSurfaceNavData* UMobileSurfaceNavComponent::ResolveNavigationDataForAgentRadius(const float AgentRadius) const
+{
+	if (!NavigationData.bIsValid)
+	{
+		return nullptr;
+	}
+
+	if (AgentRadius <= UE_KINDA_SMALL_NUMBER || NavigationDataLayers.IsEmpty())
+	{
+		return &NavigationData;
+	}
+
+	const FMobileSurfaceNavData* BestLayer = nullptr;
+	float BestLayerRadius = TNumericLimits<float>::Max();
+	for (const FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		if (!Layer.NavigationData.bIsValid)
+		{
+			continue;
+		}
+
+		if (Layer.AgentRadius + KINDA_SMALL_NUMBER >= AgentRadius && Layer.AgentRadius < BestLayerRadius)
+		{
+			BestLayer = &Layer.NavigationData;
+			BestLayerRadius = Layer.AgentRadius;
+		}
+	}
+
+	return BestLayer;
+}
+
+void UMobileSurfaceNavComponent::RebuildAgentRadiusLayers()
+{
+	NavigationDataLayers.Reset();
+	if (!NavigationData.bIsValid)
+	{
+		return;
+	}
+
+	TArray<float> UniqueRadii;
+	CollectSortedUniqueRadii(SupportedAgentRadii, UniqueRadii);
+	for (const float AgentRadius : UniqueRadii)
+	{
+		FMobileSurfaceNavDataLayer& Layer = NavigationDataLayers.AddDefaulted_GetRef();
+		Layer.AgentRadius = AgentRadius;
+		FString LayerError;
+		if (!FMobileSurfaceNavigationBuilder::BuildAgentRadiusLayer(NavigationData, AgentRadius, Layer.NavigationData, LayerError))
+		{
+			LastBuildError += LastBuildError.IsEmpty() ? LayerError : FString::Printf(TEXT("\n%s"), *LayerError);
+			NavigationDataLayers.Pop(EAllowShrinking::No);
+		}
+	}
+
+	SyncSpecialLinksToLayers();
+	SyncRuntimeStateToLayers();
+}
+
+void UMobileSurfaceNavComponent::SyncRuntimeStateToLayers()
+{
+	for (FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		Layer.NavigationData.RegionRuntimeStates = NavigationData.RegionRuntimeStates;
+		Layer.NavigationData.RuntimeStateRevision = NavigationData.RuntimeStateRevision;
+
+		TMap<FIntPoint, FMobileSurfaceNavPortalRuntimeState> PortalStateByKey;
+		for (int32 PortalIndex = 0; PortalIndex < NavigationData.Portals.Num(); ++PortalIndex)
+		{
+			if (NavigationData.PortalRuntimeStates.IsValidIndex(PortalIndex))
+			{
+				PortalStateByKey.Add(GetSortedPortalVertexKey(NavigationData.Portals[PortalIndex]), NavigationData.PortalRuntimeStates[PortalIndex]);
+			}
+		}
+
+		Layer.NavigationData.PortalRuntimeStates.SetNum(Layer.NavigationData.Portals.Num());
+		for (int32 PortalIndex = 0; PortalIndex < Layer.NavigationData.Portals.Num(); ++PortalIndex)
+		{
+			if (const FMobileSurfaceNavPortalRuntimeState* SourceState = PortalStateByKey.Find(GetSortedPortalVertexKey(Layer.NavigationData.Portals[PortalIndex])))
+			{
+				Layer.NavigationData.PortalRuntimeStates[PortalIndex] = *SourceState;
+			}
+		}
+	}
+}
+
+void UMobileSurfaceNavComponent::SyncSpecialLinksToLayers()
+{
+	for (FMobileSurfaceNavDataLayer& Layer : NavigationDataLayers)
+	{
+		Layer.NavigationData.SpecialLinks = NavigationData.SpecialLinks;
+		for (FMobileSurfaceNavSpecialLink& Link : Layer.NavigationData.SpecialLinks)
+		{
+			for (FMobileSurfaceNavSpecialLinkNode& Node : Link.Nodes)
+			{
+				Node.TriangleIndex = FMobileSurfaceNavigationQuery::FindContainingTriangle(Layer.NavigationData, Node.LocalPosition);
+				if (Node.TriangleIndex == INDEX_NONE)
+				{
+					Node.TriangleIndex = FMobileSurfaceNavigationQuery::FindNearestTriangle(Layer.NavigationData, Node.LocalPosition);
+				}
+			}
+		}
+	}
+}
+
 const FString& UMobileSurfaceNavComponent::GetLastBuildError() const
 {
 	return LastBuildError;
@@ -739,6 +1004,7 @@ USceneComponent* UMobileSurfaceNavComponent::GetNavigationSpaceComponent() const
 void UMobileSurfaceNavComponent::MarkRuntimeStateDirty()
 {
 	++NavigationData.RuntimeStateRevision;
+	SyncRuntimeStateToLayers();
 	CurrentDebugPath = FMobileSurfaceNavPath();
 	RefreshPortalLabelComponents();
 

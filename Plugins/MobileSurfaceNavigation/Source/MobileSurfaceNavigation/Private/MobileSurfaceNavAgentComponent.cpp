@@ -5,6 +5,8 @@
 #include "MobileSurfaceNavSubsystem.h"
 
 #include "Components/SceneComponent.h"
+#include "DrawDebugHelpers.h"
+#include "Engine/World.h"
 #include "GameFramework/Actor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfaceNavAgent, Log, All);
@@ -309,16 +311,21 @@ bool UMobileSurfaceNavAgentComponent::RequestPathImmediate(
 	LastProgressWorldPosition = Owner->GetActorLocation();
 	SameWaypointStuckChecks = 0;
 	StuckCheckTimer = 0.0f;
-	CachedNavigationLocalPosition = CurrentLocal;
+	CachedNavigationLocalPosition = CurrentPath.Waypoints.IsValidIndex(0)
+		? CurrentPath.Waypoints[0]
+		: CurrentLocal;
 	bHasCachedNavigationLocalPosition = true;
+	SyncOwnerToCachedNavigationLocalPosition();
 	if (bLogPathRequests)
 	{
-		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s immediate path success: triangles=%d waypoints=%d length=%.1f revision=%d"),
+		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s immediate path success: triangles=%d waypoints=%d length=%.1f revision=%d layer=%.1f start=%s"),
 			*GetNameSafe(GetOwner()),
 			CurrentPath.TriangleIndices.Num(),
 			CurrentPath.Waypoints.Num(),
 			CurrentPath.EstimatedLength,
-			ObservedRuntimeStateRevision);
+			ObservedRuntimeStateRevision,
+			CurrentPath.AgentRadiusLayer,
+			*CachedNavigationLocalPosition.ToCompactString());
 	}
 	return true;
 }
@@ -387,17 +394,22 @@ bool UMobileSurfaceNavAgentComponent::PollPendingPathRequest()
 	StuckCheckTimer = 0.0f;
 	if (GetOwner() && NavigationComponent && NavigationComponent->GetOwner() && NavigationComponent->GetOwner()->GetRootComponent())
 	{
-		CachedNavigationLocalPosition = NavigationComponent->GetOwner()->GetRootComponent()->GetComponentTransform().InverseTransformPosition(GetOwner()->GetActorLocation());
+		CachedNavigationLocalPosition = CurrentPath.Waypoints.IsValidIndex(0)
+			? CurrentPath.Waypoints[0]
+			: NavigationComponent->GetOwner()->GetRootComponent()->GetComponentTransform().InverseTransformPosition(GetOwner()->GetActorLocation());
 		bHasCachedNavigationLocalPosition = true;
+		SyncOwnerToCachedNavigationLocalPosition();
 	}
 	if (bLogPathRequests)
 	{
-		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s queued path success: triangles=%d waypoints=%d length=%.1f revision=%d"),
+		UE_LOG(LogMobileSurfaceNavAgent, Log, TEXT("%s queued path success: triangles=%d waypoints=%d length=%.1f revision=%d layer=%.1f start=%s"),
 			*GetNameSafe(GetOwner()),
 			CurrentPath.TriangleIndices.Num(),
 			CurrentPath.Waypoints.Num(),
 			CurrentPath.EstimatedLength,
-			ObservedRuntimeStateRevision);
+			ObservedRuntimeStateRevision,
+			CurrentPath.AgentRadiusLayer,
+			*CachedNavigationLocalPosition.ToCompactString());
 	}
 	return true;
 }
@@ -432,6 +444,7 @@ void UMobileSurfaceNavAgentComponent::ClearCurrentPath()
 	StuckCheckTimer = 0.0f;
 	AgentState = EMobileSurfaceNavAgentState::Idle;
 	bHasCachedNavigationLocalPosition = false;
+	LastDebugPathTriangleIndex = INDEX_NONE;
 }
 
 bool UMobileSurfaceNavAgentComponent::RepathToActiveTarget(const bool bPreserveCurrentPathUntilSuccess)
@@ -1211,6 +1224,176 @@ void UMobileSurfaceNavAgentComponent::ConsumeDeferredMoveRequest()
 	RequestMoveToLocalInternal(DeferredTarget, false);
 }
 
+void UMobileSurfaceNavAgentComponent::DrawCurrentPathDebug() const
+{
+	if (!bDrawCurrentPathDebug || !CurrentPath.bIsValid || !NavigationComponent || CurrentPath.TriangleIndices.IsEmpty())
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	const USceneComponent* SpaceComponent = NavigationComponent->GetOwner() ? NavigationComponent->GetOwner()->GetRootComponent() : nullptr;
+	if (!World || !SpaceComponent)
+	{
+		return;
+	}
+
+	const FMobileSurfaceNavData* NavDataPtr = NavigationComponent->GetNavigationDataForAgentRadius(CurrentPath.AgentRadiusLayer);
+	const FMobileSurfaceNavData& NavData = NavDataPtr ? *NavDataPtr : NavigationComponent->GetNavigationData();
+	const FTransform LocalToWorld = SpaceComponent->GetComponentTransform();
+	const float Duration = 0.0f;
+	const uint8 DepthPriority = 0;
+
+	for (int32 TrianglePathIndex = 0; TrianglePathIndex < CurrentPath.TriangleIndices.Num(); ++TrianglePathIndex)
+	{
+		const int32 TriangleIndex = CurrentPath.TriangleIndices[TrianglePathIndex];
+		if (!NavData.Triangles.IsValidIndex(TriangleIndex))
+		{
+			continue;
+		}
+
+		const FMobileSurfaceNavTriangle& Triangle = NavData.Triangles[TriangleIndex];
+		const bool bIsCurrentCorridorTriangle = TrianglePathIndex == LastDebugPathTriangleIndex;
+		const FColor TriangleColor = bIsCurrentCorridorTriangle ? FColor::Yellow : FColor(90, 180, 255);
+		const float LineThickness = bIsCurrentCorridorTriangle ? 5.0f : 2.0f;
+
+		const FVector V0 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.X].LocalPosition);
+		const FVector V1 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition);
+		const FVector V2 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Z].LocalPosition);
+		DrawDebugLine(World, V0, V1, TriangleColor, false, Duration, DepthPriority, LineThickness);
+		DrawDebugLine(World, V1, V2, TriangleColor, false, Duration, DepthPriority, LineThickness);
+		DrawDebugLine(World, V2, V0, TriangleColor, false, Duration, DepthPriority, LineThickness);
+
+		if (bDrawCurrentPathTriangleLabels)
+		{
+			DrawDebugString(
+				World,
+				LocalToWorld.TransformPosition(Triangle.Center + FVector(0.0, 0.0, 10.0f)),
+				FString::Printf(TEXT("T%d [%d]"), TriangleIndex, TrianglePathIndex),
+				nullptr,
+				TriangleColor,
+				Duration,
+				false,
+				1.0f);
+		}
+	}
+
+	for (int32 TrianglePathIndex = 0; TrianglePathIndex + 1 < CurrentPath.TriangleIndices.Num(); ++TrianglePathIndex)
+	{
+		const int32 TriangleA = CurrentPath.TriangleIndices[TrianglePathIndex];
+		const int32 TriangleB = CurrentPath.TriangleIndices[TrianglePathIndex + 1];
+		int32 PortalIndex = INDEX_NONE;
+		if (NavData.TriangleAdjacency.IsValidIndex(TriangleA))
+		{
+			for (const FMobileSurfaceTriangleAdjacency& Adjacency : NavData.TriangleAdjacency[TriangleA].Neighbors)
+			{
+				if (Adjacency.NeighborTriangleIndex == TriangleB)
+				{
+					PortalIndex = Adjacency.PortalIndex;
+					break;
+				}
+			}
+		}
+		if (!NavData.Portals.IsValidIndex(PortalIndex))
+		{
+			continue;
+		}
+
+		const FMobileSurfaceNavPortal& Portal = NavData.Portals[PortalIndex];
+		const FVector Left = LocalToWorld.TransformPosition(Portal.LeftPoint);
+		const FVector Right = LocalToWorld.TransformPosition(Portal.RightPoint);
+		const FVector Center = LocalToWorld.TransformPosition(Portal.Center);
+		DrawDebugLine(World, Left, Right, FColor::Cyan, false, Duration, DepthPriority, 4.0f);
+		DrawDebugPoint(World, Center, 12.0f, FColor::Cyan, false, Duration, DepthPriority);
+		if (bDrawCurrentPathTriangleLabels)
+		{
+			DrawDebugString(
+				World,
+				Center + FVector(0.0, 0.0, 18.0f),
+				FString::Printf(TEXT("P%d"), PortalIndex),
+				nullptr,
+				FColor::Cyan,
+				Duration,
+				false,
+				1.0f);
+		}
+	}
+
+	if (CurrentPath.RawWaypoints.Num() >= 2)
+	{
+		for (int32 WaypointIndex = 0; WaypointIndex + 1 < CurrentPath.RawWaypoints.Num(); ++WaypointIndex)
+		{
+			const FVector Start = LocalToWorld.TransformPosition(CurrentPath.RawWaypoints[WaypointIndex]);
+			const FVector End = LocalToWorld.TransformPosition(CurrentPath.RawWaypoints[WaypointIndex + 1]);
+			DrawDebugLine(World, Start, End, FColor::Orange, false, Duration, DepthPriority, 2.0f);
+			DrawDebugPoint(World, Start, 10.0f, WaypointIndex == 0 ? FColor::Green : FColor::Orange, false, Duration, DepthPriority);
+		}
+		DrawDebugPoint(World, LocalToWorld.TransformPosition(CurrentPath.RawWaypoints.Last()), 10.0f, FColor::Orange, false, Duration, DepthPriority);
+	}
+
+	if (CurrentPath.Waypoints.Num() >= 2)
+	{
+		for (int32 WaypointIndex = 0; WaypointIndex + 1 < CurrentPath.Waypoints.Num(); ++WaypointIndex)
+		{
+			const FVector Start = LocalToWorld.TransformPosition(CurrentPath.Waypoints[WaypointIndex]);
+			const FVector End = LocalToWorld.TransformPosition(CurrentPath.Waypoints[WaypointIndex + 1]);
+			DrawDebugLine(World, Start, End, FColor::Red, false, Duration, DepthPriority, 6.0f);
+			DrawDebugPoint(World, Start, 16.0f, WaypointIndex == 0 ? FColor::Green : FColor::Red, false, Duration, DepthPriority);
+			if (bDrawCurrentPathTriangleLabels)
+			{
+				DrawDebugString(World, Start + FVector(0.0, 0.0, 24.0f), FString::Printf(TEXT("W%d"), WaypointIndex), nullptr, FColor::Red, Duration, false, 1.0f);
+			}
+		}
+		DrawDebugPoint(World, LocalToWorld.TransformPosition(CurrentPath.Waypoints.Last()), 16.0f, FColor::Red, false, Duration, DepthPriority);
+	}
+
+	if (GetOwner())
+	{
+		DrawDebugString(
+			World,
+			GetOwner()->GetActorLocation() + FVector(0.0, 0.0, AgentRadius + 40.0f),
+			FString::Printf(
+				TEXT("%s Seg=%d Wp=%d Layer=%.1f StartTri=%d EndTri=%d"),
+				LexAgentStateText(AgentState),
+				CurrentSegmentIndex,
+				CurrentWaypointIndex,
+				CurrentPath.AgentRadiusLayer,
+				CurrentPath.StartTriangleIndex,
+				CurrentPath.EndTriangleIndex),
+			nullptr,
+			FColor::White,
+			Duration,
+			false,
+			1.0f);
+
+		if (CurrentPath.Waypoints.IsValidIndex(0))
+		{
+			DrawDebugString(
+				World,
+				LocalToWorld.TransformPosition(CurrentPath.Waypoints[0]) + FVector(0.0, 0.0, 18.0f),
+				FString::Printf(TEXT("PathStart L=%.1f"), CurrentPath.AgentRadiusLayer),
+				nullptr,
+				FColor::Green,
+				Duration,
+				false,
+				1.0f);
+		}
+
+		if (CurrentPath.Waypoints.Num() >= 2)
+		{
+			DrawDebugString(
+				World,
+				LocalToWorld.TransformPosition(CurrentPath.Waypoints.Last()) + FVector(0.0, 0.0, 18.0f),
+				TEXT("PathEnd"),
+				nullptr,
+				FColor::Red,
+				Duration,
+				false,
+				1.0f);
+		}
+	}
+}
+
 void UMobileSurfaceNavAgentComponent::TickComponent(
 	const float DeltaTime,
 	const ELevelTick TickType,
@@ -1222,6 +1405,14 @@ void UMobileSurfaceNavAgentComponent::TickComponent(
 	if (!Owner)
 	{
 		return;
+	}
+
+	if (bDrawCurrentPathDebug)
+	{
+		LastDebugPathTriangleIndex = CurrentSegmentIndex >= 0 && CurrentSegmentIndex < CurrentPath.TriangleIndices.Num()
+			? CurrentSegmentIndex
+			: INDEX_NONE;
+		DrawCurrentPathDebug();
 	}
 
 	if (!IsBoardedOnActiveElevator())

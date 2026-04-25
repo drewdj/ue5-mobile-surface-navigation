@@ -2,6 +2,8 @@
 
 #include "MobileSurfaceNavigationQuery.h"
 
+DEFINE_LOG_CATEGORY_STATIC(LogMobileSurfacePathfinder, Log, All);
+
 namespace MobileSurfaceNavigation::Pathfinder
 {
 	struct FFunnelPortal
@@ -84,37 +86,6 @@ namespace MobileSurfaceNavigation::Pathfinder
 		return Result;
 	}
 
-	static double ComputeBoundaryClearanceSquared(const FMobileSurfaceNavData& NavData, const FVector& LocalPosition)
-	{
-		double BestDistanceSquared = TNumericLimits<double>::Max();
-		bool bHasBoundary = false;
-
-		for (const FMobileSurfaceNavEdge& Edge : NavData.Edges)
-		{
-			if (!Edge.bIsBoundary)
-			{
-				continue;
-			}
-
-			bHasBoundary = true;
-			const FVector A = NavData.Vertices[Edge.VertexIndices.X].LocalPosition;
-			const FVector B = NavData.Vertices[Edge.VertexIndices.Y].LocalPosition;
-			BestDistanceSquared = FMath::Min(BestDistanceSquared, static_cast<double>(FMath::PointDistToSegmentSquared(LocalPosition, A, B)));
-		}
-
-		return bHasBoundary ? BestDistanceSquared : TNumericLimits<double>::Max();
-	}
-
-	static bool HasEnoughClearance(const FMobileSurfaceNavData& NavData, const FVector& LocalPosition, const float AgentRadius)
-	{
-		if (AgentRadius <= 0.0f)
-		{
-			return true;
-		}
-
-		return ComputeBoundaryClearanceSquared(NavData, LocalPosition) >= FMath::Square(static_cast<double>(AgentRadius));
-	}
-
 	static bool IsTagAllowed(const FName Tag, const TArray<FName>& AllowedTags, const TArray<FName>& ExcludedTags)
 	{
 		if (ExcludedTags.Contains(Tag))
@@ -165,18 +136,6 @@ namespace MobileSurfaceNavigation::Pathfinder
 			}
 
 			if (!IsTagAllowed(PortalState->PortalTag, Params.AllowedPortalTags, Params.ExcludedPortalTags))
-			{
-				return false;
-			}
-		}
-
-		const float EffectivePortalWidth = PortalState && PortalState->EffectiveWidthOverride > 0.0f
-			? PortalState->EffectiveWidthOverride
-			: Adjacency.PortalWidth;
-
-		if (Params.AgentRadius > 0.0f)
-		{
-			if (EffectivePortalWidth < Params.AgentRadius * 2.0f || Adjacency.BoundaryClearance < Params.AgentRadius)
 			{
 				return false;
 			}
@@ -344,6 +303,153 @@ namespace MobileSurfaceNavigation::Pathfinder
 		}
 	}
 
+	static TArray<FVector> RunFunnel(
+		const FMobileSurfaceNavData& NavData,
+		const TArray<int32>& TrianglePath,
+		const FVector& Start,
+		const FVector& End);
+
+	static const FMobileSurfaceNavPortal* FindPortalBetweenTriangles(
+		const FMobileSurfaceNavData& NavData,
+		const int32 TriangleA,
+		const int32 TriangleB)
+	{
+		if (!NavData.TriangleAdjacency.IsValidIndex(TriangleA))
+		{
+			return nullptr;
+		}
+
+		for (const FMobileSurfaceTriangleAdjacency& Adjacency : NavData.TriangleAdjacency[TriangleA].Neighbors)
+		{
+			if (Adjacency.NeighborTriangleIndex == TriangleB && NavData.Portals.IsValidIndex(Adjacency.PortalIndex))
+			{
+				return &NavData.Portals[Adjacency.PortalIndex];
+			}
+		}
+
+		return nullptr;
+	}
+
+	static FVector ComputeBestTransitionPointOnPortal(
+		const FMobileSurfaceNavPortal& Portal,
+		const FVector& Start,
+		const FVector& End)
+	{
+		const FVector PortalStart = Portal.LeftPoint;
+		const FVector PortalEnd = Portal.RightPoint;
+		const FVector PortalVector = PortalEnd - PortalStart;
+		const double PortalLengthSquared = PortalVector.SizeSquared();
+		if (PortalLengthSquared <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return Portal.Center;
+		}
+
+		const FVector PathVector = End - Start;
+		const double PathLengthSquared = PathVector.SizeSquared();
+		if (PathLengthSquared <= UE_DOUBLE_SMALL_NUMBER)
+		{
+			return FMath::ClosestPointOnSegment(Start, PortalStart, PortalEnd);
+		}
+
+		const double A = PortalLengthSquared;
+		const double B = FVector::DotProduct(PortalVector, PathVector);
+		const double C = PathLengthSquared;
+		const FVector W = PortalStart - Start;
+		const double D = FVector::DotProduct(PortalVector, W);
+		const double E = FVector::DotProduct(PathVector, W);
+		const double Denom = (A * C) - (B * B);
+
+		double PortalT = 0.5;
+		if (FMath::Abs(Denom) > UE_DOUBLE_SMALL_NUMBER)
+		{
+			PortalT = ((B * E) - (C * D)) / Denom;
+		}
+		else
+		{
+			PortalT = static_cast<double>(FVector::DotProduct(Start - PortalStart, PortalVector)) / A;
+		}
+
+		PortalT = FMath::Clamp(PortalT, 0.0, 1.0);
+		return PortalStart + (PortalVector * PortalT);
+	}
+
+	static void AppendRegionFunnelWaypoints(
+		const FMobileSurfaceNavData& NavData,
+		const TArray<int32>& TrianglePath,
+		const FVector& Start,
+		const FVector& End,
+		TArray<FVector>& InOutWaypoints)
+	{
+		if (TrianglePath.IsEmpty())
+		{
+			AddWaypointIfNeeded(InOutWaypoints, Start);
+			AddWaypointIfNeeded(InOutWaypoints, End);
+			return;
+		}
+
+		int32 RegionSegmentStartIndex = 0;
+		FVector RegionSegmentStartPosition = Start;
+
+		for (int32 PathIndex = 0; PathIndex + 1 < TrianglePath.Num(); ++PathIndex)
+		{
+			const int32 CurrentTriangleIndex = TrianglePath[PathIndex];
+			const int32 NextTriangleIndex = TrianglePath[PathIndex + 1];
+			if (!NavData.Triangles.IsValidIndex(CurrentTriangleIndex) || !NavData.Triangles.IsValidIndex(NextTriangleIndex))
+			{
+				continue;
+			}
+
+			const int32 CurrentRegionId = NavData.Triangles[CurrentTriangleIndex].RegionId;
+			const int32 NextRegionId = NavData.Triangles[NextTriangleIndex].RegionId;
+			if (CurrentRegionId == NextRegionId)
+			{
+				continue;
+			}
+
+			const FMobileSurfaceNavPortal* RegionTransitionPortal = FindPortalBetweenTriangles(NavData, CurrentTriangleIndex, NextTriangleIndex);
+			if (!RegionTransitionPortal)
+			{
+				continue;
+			}
+
+			const FVector RegionTransitionPoint = ComputeBestTransitionPointOnPortal(
+				*RegionTransitionPortal,
+				RegionSegmentStartPosition,
+				End);
+
+			TArray<int32> RegionTrianglePath;
+			for (int32 SegmentIndex = RegionSegmentStartIndex; SegmentIndex <= PathIndex; ++SegmentIndex)
+			{
+				RegionTrianglePath.Add(TrianglePath[SegmentIndex]);
+			}
+
+			AppendWaypointsIfNeeded(
+				InOutWaypoints,
+				RunFunnel(
+					NavData,
+					RegionTrianglePath,
+					RegionSegmentStartPosition,
+					RegionTransitionPoint));
+
+			RegionSegmentStartIndex = PathIndex + 1;
+			RegionSegmentStartPosition = RegionTransitionPoint;
+		}
+
+		TArray<int32> FinalRegionTrianglePath;
+		for (int32 SegmentIndex = RegionSegmentStartIndex; SegmentIndex < TrianglePath.Num(); ++SegmentIndex)
+		{
+			FinalRegionTrianglePath.Add(TrianglePath[SegmentIndex]);
+		}
+
+		AppendWaypointsIfNeeded(
+			InOutWaypoints,
+			RunFunnel(
+				NavData,
+				FinalRegionTrianglePath,
+				RegionSegmentStartPosition,
+				End));
+	}
+
 	static EMobileSurfaceNavPathSegmentType ToPathSegmentType(const EMobileSurfaceNavSpecialLinkType LinkType)
 	{
 		switch (LinkType)
@@ -501,6 +607,7 @@ namespace MobileSurfaceNavigation::Pathfinder
 				FunnelPortal.Left2D = PointB2D;
 				FunnelPortal.Right2D = PointA2D;
 			}
+
 		}
 
 		FFunnelPortal& EndPortal = Portals.AddDefaulted_GetRef();
@@ -612,23 +719,31 @@ bool FMobileSurfacePathfinder::FindPath(
 		return false;
 	}
 
-	const FVector ResolvedStartLocalPosition = StartTriangleIndex != INDEX_NONE
+	FVector ResolvedStartLocalPosition = FVector::ZeroVector;
+	FVector ResolvedEndLocalPosition = FVector::ZeroVector;
+	ResolvedStartLocalPosition = StartTriangleIndex != INDEX_NONE
 		? StartLocalPosition
 		: MobileSurfaceNavigation::Pathfinder::GetClosestPointOnTriangle(NavData, FallbackStartTriangle, StartLocalPosition);
-	const FVector ResolvedEndLocalPosition = EndTriangleIndex != INDEX_NONE
+	ResolvedEndLocalPosition = EndTriangleIndex != INDEX_NONE
 		? EndLocalPosition
 		: MobileSurfaceNavigation::Pathfinder::GetClosestPointOnTriangle(NavData, FallbackEndTriangle, EndLocalPosition);
-
-	if (Params.bRequireStartAndEndClearance &&
-		(!MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, ResolvedStartLocalPosition, Params.AgentRadius) ||
-		 !MobileSurfaceNavigation::Pathfinder::HasEnoughClearance(NavData, ResolvedEndLocalPosition, Params.AgentRadius)))
-	{
-		return false;
-	}
 
 	OutPath.StartTriangleIndex = FallbackStartTriangle;
 	OutPath.EndTriangleIndex = FallbackEndTriangle;
 	OutPath.RuntimeStateRevision = NavData.RuntimeStateRevision;
+
+	UE_LOG(
+		LogMobileSurfacePathfinder,
+		Log,
+		TEXT("FindPath: requestedRadius=%.1f navTriangles=%d startTri=%d fallbackStart=%d endTri=%d fallbackEnd=%d resolvedStart=%s resolvedEnd=%s"),
+		Params.AgentRadius,
+		NavData.Triangles.Num(),
+		StartTriangleIndex,
+		FallbackStartTriangle,
+		EndTriangleIndex,
+		FallbackEndTriangle,
+		*ResolvedStartLocalPosition.ToCompactString(),
+		*ResolvedEndLocalPosition.ToCompactString());
 
 	if (FallbackStartTriangle == FallbackEndTriangle)
 	{
@@ -809,13 +924,12 @@ bool FMobileSurfacePathfinder::FindPath(
 				FunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
 			}
 			const int32 WalkSegmentStartWaypointIndex = OutPath.Waypoints.IsEmpty() ? 0 : (OutPath.Waypoints.Num() - 1);
-			MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
-				OutPath.Waypoints,
-				MobileSurfaceNavigation::Pathfinder::RunFunnel(
-					NavData,
-					FunnelSegmentTriangles,
-					FunnelSegmentStartPosition,
-					LinkEntryPosition));
+			MobileSurfaceNavigation::Pathfinder::AppendRegionFunnelWaypoints(
+				NavData,
+				FunnelSegmentTriangles,
+				FunnelSegmentStartPosition,
+				LinkEntryPosition,
+				OutPath.Waypoints);
 			MobileSurfaceNavigation::Pathfinder::AddPathSegment(
 				OutPath,
 				EMobileSurfaceNavPathSegmentType::Walk,
@@ -862,13 +976,12 @@ bool FMobileSurfacePathfinder::FindPath(
 		FinalFunnelSegmentTriangles.Add(ReversedTriangles[SegmentIndex]);
 	}
 	const int32 FinalWalkSegmentStartWaypointIndex = OutPath.Waypoints.IsEmpty() ? 0 : (OutPath.Waypoints.Num() - 1);
-	MobileSurfaceNavigation::Pathfinder::AppendWaypointsIfNeeded(
-		OutPath.Waypoints,
-		MobileSurfaceNavigation::Pathfinder::RunFunnel(
-			NavData,
-			FinalFunnelSegmentTriangles,
-			FunnelSegmentStartPosition,
-			ResolvedEndLocalPosition));
+	MobileSurfaceNavigation::Pathfinder::AppendRegionFunnelWaypoints(
+		NavData,
+		FinalFunnelSegmentTriangles,
+		FunnelSegmentStartPosition,
+		ResolvedEndLocalPosition,
+		OutPath.Waypoints);
 	MobileSurfaceNavigation::Pathfinder::AddPathSegment(
 		OutPath,
 		EMobileSurfaceNavPathSegmentType::Walk,

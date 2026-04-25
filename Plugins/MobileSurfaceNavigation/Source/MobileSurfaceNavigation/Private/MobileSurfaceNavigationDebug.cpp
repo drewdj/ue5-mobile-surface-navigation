@@ -47,6 +47,31 @@ namespace MobileSurfaceNavigation::Debug
 
 		return FColor::Green;
 	}
+
+	static FColor GetBuildDebugSegmentColor(const EMobileSurfaceNavBuildDebugSegmentType SegmentType)
+	{
+		switch (SegmentType)
+		{
+		case EMobileSurfaceNavBuildDebugSegmentType::PhysicalBoundary:
+			return FColor::Red;
+		case EMobileSurfaceNavBuildDebugSegmentType::RegionSeam:
+			return FColor::Cyan;
+		default:
+			return FColor::White;
+		}
+	}
+
+	static FColor GetBuildDebugLoopColor(
+		const EMobileSurfaceNavBuildDebugLoopType LoopType,
+		const EMobileSurfaceBoundaryKind BoundaryKind)
+	{
+		if (LoopType == EMobileSurfaceNavBuildDebugLoopType::Original)
+		{
+			return BoundaryKind == EMobileSurfaceBoundaryKind::Hole ? FColor(255, 170, 0) : FColor(0, 220, 120);
+		}
+
+		return BoundaryKind == EMobileSurfaceBoundaryKind::Hole ? FColor(255, 90, 255) : FColor(255, 255, 0);
+	}
 }
 
 void FMobileSurfaceNavigationDebug::DrawNavData(
@@ -76,9 +101,9 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 	{
 		for (const FMobileSurfaceNavTriangle& Triangle : NavData.Triangles)
 		{
-			const FVector Vertex0 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.X].LocalPosition);
-			const FVector Vertex1 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition);
-			const FVector Vertex2 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Z].LocalPosition);
+			const FVector Vertex0 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.X].LocalPosition) + Settings.WorldOffset;
+			const FVector Vertex1 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Y].LocalPosition) + Settings.WorldOffset;
+			const FVector Vertex2 = LocalToWorld.TransformPosition(NavData.Vertices[Triangle.VertexIndices.Z].LocalPosition) + Settings.WorldOffset;
 			const FColor TriangleColor = MobileSurfaceNavigation::Debug::GetRegionColor(Triangle.RegionId);
 
 			DrawDebugLine(World, Vertex0, Vertex1, TriangleColor, false, Settings.Duration, DepthPriority, Settings.LineThickness);
@@ -87,7 +112,7 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 
 			if (Settings.bDrawTriangleNormals)
 			{
-				const FVector Center = LocalToWorld.TransformPosition(Triangle.Center);
+				const FVector Center = LocalToWorld.TransformPosition(Triangle.Center) + Settings.WorldOffset;
 				const FVector NormalEnd = Center + LocalToWorld.TransformVectorNoScale(Triangle.Normal * Settings.NormalLength);
 				DrawDebugLine(World, Center, NormalEnd, FColor::Cyan, false, Settings.Duration, DepthPriority, Settings.LineThickness);
 			}
@@ -104,10 +129,76 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 				BoundaryVertexIndices.Add(Loop.VertexIndices[VertexIndex]);
 				BoundaryVertexIndices.Add(Loop.VertexIndices[VertexIndex + 1]);
 
-				const FVector Start = LocalToWorld.TransformPosition(NavData.Vertices[Loop.VertexIndices[VertexIndex]].LocalPosition);
-				const FVector End = LocalToWorld.TransformPosition(NavData.Vertices[Loop.VertexIndices[VertexIndex + 1]].LocalPosition);
+				const FVector Start = LocalToWorld.TransformPosition(NavData.Vertices[Loop.VertexIndices[VertexIndex]].LocalPosition) + Settings.WorldOffset;
+				const FVector End = LocalToWorld.TransformPosition(NavData.Vertices[Loop.VertexIndices[VertexIndex + 1]].LocalPosition) + Settings.WorldOffset;
 				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.0f);
 			}
+		}
+	}
+
+	if (Settings.bDrawBuildDebugData)
+	{
+		for (const FMobileSurfaceNavBuildDebugSegment& Segment : NavData.BuildDebugSegments)
+		{
+			if (Settings.BuildDebugRegionId != INDEX_NONE && Segment.RegionId != Settings.BuildDebugRegionId)
+			{
+				continue;
+			}
+
+			const FVector Start = LocalToWorld.TransformPosition(Segment.StartLocalPosition) + Settings.WorldOffset;
+			const FVector End = LocalToWorld.TransformPosition(Segment.EndLocalPosition) + Settings.WorldOffset;
+			DrawDebugLine(
+				World,
+				Start,
+				End,
+				MobileSurfaceNavigation::Debug::GetBuildDebugSegmentColor(Segment.SegmentType),
+				false,
+				Settings.Duration,
+				DepthPriority,
+				Settings.LineThickness * 3.0f);
+		}
+
+		for (const FMobileSurfaceNavBuildDebugLoop& Loop : NavData.BuildDebugLoops)
+		{
+			if (Settings.BuildDebugRegionId != INDEX_NONE && Loop.RegionId != Settings.BuildDebugRegionId)
+			{
+				continue;
+			}
+
+			if (Loop.LocalPoints.Num() < 2)
+			{
+				continue;
+			}
+
+			const FColor LoopColor = MobileSurfaceNavigation::Debug::GetBuildDebugLoopColor(Loop.LoopType, Loop.Kind);
+			for (int32 PointIndex = 0; PointIndex + 1 < Loop.LocalPoints.Num(); ++PointIndex)
+			{
+				const FVector Start = LocalToWorld.TransformPosition(Loop.LocalPoints[PointIndex]) + Settings.WorldOffset;
+				const FVector End = LocalToWorld.TransformPosition(Loop.LocalPoints[PointIndex + 1]) + Settings.WorldOffset;
+				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.5f);
+			}
+
+			if (Loop.bClosed)
+			{
+				const FVector Start = LocalToWorld.TransformPosition(Loop.LocalPoints.Last()) + Settings.WorldOffset;
+				const FVector End = LocalToWorld.TransformPosition(Loop.LocalPoints[0]) + Settings.WorldOffset;
+				DrawDebugLine(World, Start, End, LoopColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 2.5f);
+			}
+
+			const FString Label = FString::Printf(
+				TEXT("R%d %s %s"),
+				Loop.RegionId,
+				Loop.LoopType == EMobileSurfaceNavBuildDebugLoopType::Inset ? TEXT("Inset") : TEXT("Original"),
+				Loop.Kind == EMobileSurfaceBoundaryKind::Hole ? TEXT("Hole") : TEXT("Outer"));
+			DrawDebugString(
+				World,
+				LocalToWorld.TransformPosition(Loop.LocalPoints[0]) + Settings.WorldOffset + FVector(0.0f, 0.0f, 20.0f),
+				Label,
+				nullptr,
+				LoopColor,
+				Settings.Duration,
+				false,
+				1.0f);
 		}
 	}
 
@@ -122,10 +213,10 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 			}
 
 			const FColor PortalColor = MobileSurfaceNavigation::Debug::GetPortalColor(NavData, PortalIndex);
-			const FVector CenterA = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleA].Center);
-			const FVector CenterB = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleB].Center);
+			const FVector CenterA = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleA].Center) + Settings.WorldOffset;
+			const FVector CenterB = LocalToWorld.TransformPosition(NavData.Triangles[Portal.TriangleB].Center) + Settings.WorldOffset;
 			DrawDebugLine(World, CenterA, CenterB, PortalColor, false, Settings.Duration, DepthPriority, Settings.LineThickness * 1.5f);
-			const FVector PortalCenter = LocalToWorld.TransformPosition(Portal.Center);
+			const FVector PortalCenter = LocalToWorld.TransformPosition(Portal.Center) + Settings.WorldOffset;
 			DrawDebugPoint(World, PortalCenter, Settings.VertexSize * 0.75f, PortalColor, false, Settings.Duration, DepthPriority);
 
 			if (PortalIndex == Settings.HighlightPortalIndex)
@@ -145,7 +236,7 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 			FVector LabelAnchor = FVector::ZeroVector;
 			for (int32 NodeIndex = 0; NodeIndex < Link.GetNodeCount(); ++NodeIndex)
 			{
-				const FVector NodeWorld = LocalToWorld.TransformPosition(Link.GetNodeLocalPosition(NodeIndex));
+				const FVector NodeWorld = LocalToWorld.TransformPosition(Link.GetNodeLocalPosition(NodeIndex)) + Settings.WorldOffset;
 				if (NodeIndex == 0)
 				{
 					LabelAnchor = NodeWorld;
@@ -171,7 +262,7 @@ void FMobileSurfaceNavigationDebug::DrawNavData(
 	{
 		for (const int32 VertexIndex : UsedVertexIndices)
 		{
-			const FVector VertexPosition = LocalToWorld.TransformPosition(NavData.Vertices[VertexIndex].LocalPosition);
+			const FVector VertexPosition = LocalToWorld.TransformPosition(NavData.Vertices[VertexIndex].LocalPosition) + Settings.WorldOffset;
 			const FColor VertexColor = BoundaryVertexIndices.Contains(VertexIndex) ? FColor::Green : FColor::Yellow;
 			const float VertexSize = BoundaryVertexIndices.Contains(VertexIndex) ? Settings.VertexSize * 1.25f : Settings.VertexSize;
 			DrawDebugPoint(World, VertexPosition, VertexSize, VertexColor, false, Settings.Duration, DepthPriority);
